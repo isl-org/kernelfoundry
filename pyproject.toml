@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kernelfoundry"
+dynamic = ["version"]
+description = "A Python package for kernel testing"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    {name = "ISL Org", email = "info@isl.org"}
+]
+dependencies = [
+    "numpy>=1.26",
+    "pytest",
+    "pytest-dependency",
+    "ninja"
+]
+
+[project.optional-dependencies]
+dev = [
+    "black >= 26, < 27",
+    "python-semantic-release",
+]
+docs = [
+    "sphinx >= 7.0",
+    "shibuya", # sphinx theme
+    "sphinx-copybutton",
+]
+
+[project.urls]
+Homepage = "https://github.com/isl-org/code_gen_kernel.kernelfoundry"
+Repository = "https://github.com/isl-org/code_gen_kernel.kernelfoundry"
+
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["templates*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "kernelfoundry.__version__"}
+
+[tool.black]
+line-length = 120
+
+[tool.semantic_release]
+version_variables = ["kernelfoundry/__init__.py:__version__"]
+build_command = "pip install build && python -m build"
+major_on_zero = true
+branch = "main"
+upload_to_vcs_release = true
+upload_to_repository = false
+commit_message = "chore(release): {version} [skip ci]"
+
+[tool.semantic_release.changelog]
+exclude_commit_patterns = []
+
+[tool.semantic_release.changelog.default_templates]
+changelog_file = "CHANGELOG.md"
+
+[tool.semantic_release.branches.main]
+match = "(main|master)"
+prerelease = false
+
+[tool.semantic_release.commit_parser_options]
+allowed_tags = ["build", "chore", "ci", "docs", "feat", "fix", "perf", "style", "refactor", "test"]
+minor_tags = ["feat"]
+patch_tags = ["fix", "perf"]
