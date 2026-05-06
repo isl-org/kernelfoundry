@@ -20,8 +20,23 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
+          ref: ${{ github.ref_name }}
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Required to forward SSH key to PSR Docker image
+      - name: Setup SSH Agent with Deploy Key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Force branch to workflow SHA
+        run: git reset --hard ${{ github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -42,19 +57,24 @@ jobs:
           pip install python-semantic-release build wheel
 
       - name: Semantic Release
+        id: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           source .venv/bin/activate
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          semantic-release version
-          semantic-release publish
+          semantic-release -vv version
 
       - name: Build wheel
         run: |
           source .venv/bin/activate
           python -m build --wheel
+
+      - name: Upload to GitHub Release Assets
+        if: steps.release.outputs.released == 'true'
+        uses: python-semantic-release/publish-action@v10.4.1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ steps.release.outputs.tag }}
 
       - name: Upload wheel artifacts
         uses: actions/upload-artifact@v4
