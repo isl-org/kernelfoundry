@@ -1,5 +1,5 @@
 # KernelFoundry
-<img src="assets/kernelfoundry.png" alt="KernelFoundry Logo" width="200" align="right">
+<img src="https://github.com/isl-org/kernelfoundry/raw/main/assets/kernelfoundry.png" alt="KernelFoundry Logo" width="200" align="right">
 
 KernelFoundry is a Python package for defining and evaluating GPU kernel tasks.
 
