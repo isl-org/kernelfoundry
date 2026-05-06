@@ -8,8 +8,10 @@ dynamic = ["version"]
 description = "A Python package for kernel testing"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [
-    {name = "ISL Org", email = "info@isl.org"}
+    {name = "KernelFoundry Team"}
 ]
 dependencies = [
     "numpy>=1.26",
@@ -30,8 +32,8 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/isl-org/code_gen_kernel.kernelfoundry"
-Repository = "https://github.com/isl-org/code_gen_kernel.kernelfoundry"
+Homepage = "https://github.com/isl-org/kernelfoundry"
+Repository = "https://github.com/isl-org/kernelfoundry"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -46,7 +48,7 @@ line-length = 120
 [tool.semantic_release]
 version_variables = ["kernelfoundry/__init__.py:__version__"]
 build_command = "pip install build && python -m build"
-major_on_zero = true
+allow_zero_version = true
 branch = "main"
 upload_to_vcs_release = true
 upload_to_repository = false
