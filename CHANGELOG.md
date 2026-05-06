@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.1.2 (2026-05-06)
+
+### Bug Fixes
+
+- Add deploy-docs job to release workflow ([#5](https://github.com/isl-org/kernelfoundry/pull/5),
+  [`4c9985f`](https://github.com/isl-org/kernelfoundry/commit/4c9985febf4b8b7b6934502695723c51ce584f9d))
+
+
 ## v0.1.1 (2026-05-06)
 
 ### Bug Fixes
