@@ -12,7 +12,7 @@ workflow.
 What kernelfoundry provides
 ---------------------------
 
-- A base task interface via ``kernelfoundry.custom_test.CustomTest``.
+- A base task interface via ``kernelfoundry.test_base.TestBase``.
 - Build helpers to compile kernel sources (SYCL and CUDA).
 - Pytest fixtures for toggling reference implementations, collecting performance
     samples, and handling template parameters.
