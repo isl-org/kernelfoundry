@@ -152,4 +152,3 @@ class TestBase(ABC):
     @staticmethod
     def validate():
         pass
-

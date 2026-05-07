@@ -24,4 +24,3 @@ class _CustomTestDeprecationProxy(type):
 
 class CustomTest(TestBase, metaclass=_CustomTestDeprecationProxy):
     """Deprecated alias of `kernelfoundry.test_base.TestBase`."""
-
