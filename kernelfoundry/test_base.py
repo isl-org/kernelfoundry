@@ -26,7 +26,7 @@ class TestBase(ABC):
             from pathlib import Path
             import torch
             import pytest
-            from kernelfoundry.test_base import TestBase
+            from kernelfoundry import TestBase
 
             # ... pytest fixtures for device/kernel/data are omitted for brevity.
 
