@@ -8,6 +8,5 @@ from .test_base import TestBase
 __all__ = ["CustomTest", "TestBase"]
 
 
-
 class CustomTest(TestBase):
     """Deprecated alias of `TestBase` (`from kernelfoundry import TestBase`)."""
