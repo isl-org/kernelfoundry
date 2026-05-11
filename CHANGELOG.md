@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.2.0 (2026-05-11)
+
+### Features
+
+- Rename test class from CustomTest to TestBase
+  ([#7](https://github.com/isl-org/kernelfoundry/pull/7),
+  [`1289907`](https://github.com/isl-org/kernelfoundry/commit/1289907b04785abbd2e0a666a4cad7d1727caa18))
+
+
 ## v0.1.2 (2026-05-06)
 
 ### Bug Fixes
