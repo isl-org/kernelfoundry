@@ -5,7 +5,7 @@ KernelFoundry is a Python package for defining and evaluating GPU kernel tasks.
 
 This repository provides the **task-side test harness** used in kernel generation workflows:
 
-- A base task interface (``kernelfoundry.custom_test.CustomTest``) for implementing task-specific build and pytest test logic.
+- A base task interface (`from kernelfoundry import TestBase`) for implementing task-specific build and pytest test logic.
 - Build helpers for compiling candidate kernels into PyTorch extensions (via Torch or `icpx`).
 - Pytest fixtures for correctness/performance runs and collecting runtime data.
 - Validation helpers (`assert_allclose`, cosine similarity, and related utilities).
@@ -15,7 +15,7 @@ In other words, this package is what you use to **author tasks and evaluate gene
 
 ## Typical workflow
 
-1. Create a task test class by deriving from `kernelfoundry.custom_test.CustomTest`.
+1. Create a task test class by deriving from `TestBase` (`from kernelfoundry import TestBase`).
 2. Implement build logic (optional) and correctness/performance tests.
 3. Compile candidate kernel code with `compile_torch_extension(...)`.
 4. Run pytest to validate correctness and collect benchmark timings.
