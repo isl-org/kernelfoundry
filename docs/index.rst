@@ -12,7 +12,7 @@ workflow.
 What kernelfoundry provides
 ---------------------------
 
-- A base task interface via ``kernelfoundry.custom_test.CustomTest``.
+- A base task interface via ``TestBase`` (import with ``from kernelfoundry import TestBase``).
 - Build helpers to compile kernel sources (SYCL and CUDA).
 - Pytest fixtures for toggling reference implementations, collecting performance
     samples, and handling template parameters.
@@ -22,9 +22,9 @@ What kernelfoundry provides
 Typical task workflow
 ---------------------
 
-1. Implement a task test class derived from ``CustomTest``.
+1. Implement a task test class derived from ``TestBase``.
 2. Build candidate kernel artifacts (optionally using
-     ``CustomTest.compile_torch_extension``).
+     ``TestBase.compile_torch_extension``).
 3. Run correctness tests against a reference implementation.
 4. Run performance tests (``@pytest.mark.performance``) and collect timing data.
 5. Optionally export profiling results with ``--performance-out``.
