@@ -103,47 +103,8 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
-  deploy-docs:
-    environment:
-        name: github-pages
-        url: ${{ steps.deployment.outputs.page_url }}
-    permissions:
-      id-token: write
-      pages: write
-    runs-on: ubuntu-latest
+  deploy-pages:
+    if: github.event_name == 'workflow_dispatch'
     needs: release
-    concurrency: release
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-      - name: Create virtual environment
-        run: |
-          python -m venv .venv
-          source .venv/bin/activate
-          echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
-          echo "$VIRTUAL_ENV/bin" >> $GITHUB_PATH
-      - name: Install documentation dependencies
-        run: |
-          source .venv/bin/activate
-          pip install --upgrade pip
-          pip install .[docs]
-      - name: Build documentation
-        run: |
-          source .venv/bin/activate
-          cd docs
-          make clean
-          make html
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: 'docs/_build/html/'
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v5
+    uses: ./.github/workflows/deploy-pages.yml
+    secrets: inherit
