@@ -135,7 +135,7 @@ class TestBase(ABC):
             str: GPU architecture string.
         """
         arch = None
-        from kernelfoundry.utils.sysinfo import discover_intel_gpus, get_nvidia_compute_capabilities
+        from kernelfoundry.eval_pipeline.utils.sysinfo import discover_intel_gpus, get_nvidia_compute_capabilities
 
         intel_gpus = discover_intel_gpus()
         if intel_gpus:

@@ -1,4 +1,4 @@
-"""kernelfoundry - Python package for KernelFoundry the GPU kernel generation tool."""
+"""KernelFoundry - Python package for GPU kernel generation and evaluation."""
 
 from .test_base import TestBase
 

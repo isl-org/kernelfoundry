@@ -1,0 +1,58 @@
+# PROMPT EVOLUTION TASK
+
+You must analyze the kernel generation results below and provide SEARCH/REPLACE modifications to improve the prompt sections.
+
+---
+
+## CURRENT PROMPT SECTIONS (to be evolved)
+
+{{ prompt_sections }}
+
+---
+
+## GENERATED KERNEL (with evaluation log)
+
+```{{ language }}
+{{ kernel_code }}
+```
+
+---
+
+## PERFORMANCE ANALYSIS
+
+| Metric | Result |
+|--------|--------|
+| **Correctness** | {{ correctness }} |
+| **Compilation** | {{ compiled }} |
+| **Runtime** | {{ runtime }} |
+| **Speedup vs Baseline** | {{ speedup }} |
+| **Errors/Warnings** | {{ error_msg }} |
+
+---
+
+## YOUR TASK
+
+### 1. DIAGNOSE (think step-by-step)
+- What specific issues does this kernel have?
+- Which prompt section(s) failed to prevent these issues?
+- What guidance would have led to a better kernel?
+
+### 2. PRESCRIBE (provide modifications)
+Generate SEARCH/REPLACE blocks to fix the identified prompt weaknesses.
+
+**Priority order for your changes:**
+1. Fix any guidance that CAUSED errors (incorrect advice)
+2. Add guidance to PREVENT observed failure modes
+3. Sharpen vague advice into specific, actionable instructions
+4. Add examples or anti-patterns where helpful
+
+### 3. FORMAT REMINDER
+```
+<<<<<<< SEARCH [section_name]
+[exact text from the section above - must match exactly]
+=======
+[your improved text]
+>>>>>>> REPLACE
+```
+
+Provide your analysis and SEARCH/REPLACE blocks now.

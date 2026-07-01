@@ -1,0 +1,39 @@
+# @package _global_
+defaults:
+  - override /paths: default
+  - override /inference: ensemble
+  - override /database: evolve_db_optimization_aware
+  - override /prompt: default
+  - override /task_set: default
+
+job_name: templated_on_top_sycl_l2
+
+language: SYCL
+gpu_arch: lnl
+
+inference:
+  trials_warmstart: 0 # do not use claude sonnet for this one
+
+task_set:
+  level: 2
+  use_representative: True
+
+max_iters: 3
+stop_once_correct: False
+  
+# # use this to evaluate a working kernel from another run:
+kernels_iter_0_path: "best-paper_sycl_wotemplated_l2"
+
+# Enable templated kernels
+prompt:
+  diff_format: False
+  template:
+    allow_templated: True
+    prompt_template_fn: "param_optim_prompt.j2"
+
+store_generated_kernels_in_db: true
+
+branches_per_iteration: 8
+
+devices:
+ - 0

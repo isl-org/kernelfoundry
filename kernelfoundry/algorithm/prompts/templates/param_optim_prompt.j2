@@ -1,0 +1,104 @@
+# Instructions
+
+You are a {{ language }} programming expert specializing in GPU kernel optimization. Your task is to optimize a given {{ language }} kernel.
+
+# Given kernel
+
+Here is the {{ language }} kernel that we tested {{ parent.result }}:
+```{{ language }}
+{{ parent.code }}
+```
+{% if is_feedback %}
+Feedback on this kernel:
+{{ parent.feedback }}
+{% elif parent.console_output %}
+Console output from running this kernel:
+{{ parent.console_output }}
+{% endif %}
+
+{% if include_top and top_program %}
+## Best implementation so far:
+
+This is the code of the best kernel we have tested so far {{ top_program.result }}:
+```{{ language }}
+{{ top_program.code }}
+```
+{% endif %}
+
+{% if include_hardware_specs %}
+## Hardware specification:
+Your code will run on the following hardware:
+{{ hardware_specs }}
+Please consider the hardware specifications when improving the code. 
+{% endif %}
+
+# Optimization strategy
+
+To optimize this kernel for specific hardware, please propose a templated kernel with some template parameters that can be tuned. To do so, you need to write an extension for PyTorch that implements a templated {{ language }} kernel and a forward function for dispatching.
+Select suitable parameter options by adding them as dispatch-options in the forward function.
+
+Requirements:
+* The kernel should be templated on suitable parameters, e.g. block size, etc.
+* The forward_templated function should launch the kernel with the given parameter values.
+* The forward function should have standard arguments corresponding to the template parameters of forward_templated, and should select the correct instantiation based on the input values.
+* The code must match the given kernel in functionality.
+* The code should include a Pybind11 interface exposing forward.
+
+Here is an example of a templated kernel in the correct format
+{{ templated_example }}
+
+**Critical Requirements:**
+
+1. The kernel must exactly match the functionality of the given kernel.
+2. The code must compile and run properly on the GPU.
+3. Do not cache or reuse previous results; ensure the code executes fully on each run.
+{% if language == "CUDA" %}
+5. Do not use getCurrentCUDAStream!
+6. The code should include a Pybind11 interface exposing {{ function_name }}
+{% elif language == "triton" %}
+**Triton specifics:** 
+1. Be aware that in triton.language.program_id(axis), the axis must be 0, 1 or 2. Do NOT use tl.program_id(3).
+2. Triton does not have all functionality of python / pytorch, e.g. nested functions are NOT supported, simultaneous multiple comparison is NOT supported, continue or break (of loops) are NOT supported.
+3. Some math functions like tanh, log1p, or pow were moved to tl.extra.libdevice. Usage: `from triton.language.extra import libdevice; libdevice.tanh(<tensor>)`
+{% elif language == "SYCL" %}
++**SYCL specification**
+1. Use the SYCL 2020 API.
+2. Always include <sycl/sycl.hpp> at the top of the file. The code should include a Pybind11 interface exposing {{ function_name }}
+3. **CRITICAL DIMENSION CONSTRAINT**: SYCL only supports 1, 2, or 3 dimensions for ALL templated dimension types:
+   - `sycl::range<N>`, `sycl::nd_range<N>`, `sycl::id<N>` → N ∈ {1, 2, 3} ONLY
+   - `sycl::local_accessor<T, N>`, `sycl::accessor<T, N>` → N ∈ {1, 2, 3} ONLY
+   - Using N=4 or higher causes static_assert compile failures!
+   - **For 4D+ data (e.g., Conv3d with batch×channel×D×H×W)**: Linearize higher dimensions into 1D/2D/3D:
+     ```cpp
+     // WRONG: sycl::range<4>(batch, channel, height, width) - COMPILE ERROR!
+     // CORRECT: Linearize batch*channel into first dimension
+     sycl::range<3>(batch * channel, height, width)
+     // Or use 1D with manual index computation:
+     sycl::range<1>(total_elements)
+     int idx = item.get_global_id(0);
+     int w = idx % W; int h = (idx / W) % H; int c = (idx / (W*H)) % C; int n = idx / (W*H*C);
+     ```
+4. Name all kernels explicitly! Example: parallel_for<class MyKernel>(...).
+{% if "c10::xpu::getCurrentXPUStream().queue()" in parent.code -%}
+5. Use an existing queue from torch with `sycl::queue& q = c10::xpu::getCurrentXPUStream().queue();`. Make sure to use `#include <c10/xpu/XPUStream.h>`.
+{% else -%}
+5. Use either `sycl::queue q(sycl::gpu_selector_v);` for gpu selection and queue creation or use an existing queue from torch with `sycl::queue& q = c10::xpu::getCurrentXPUStream().queue();`. Make sure to include `#include <c10/xpu/XPUStream.h>` if using the existing torch queue.
+{% endif -%}
+6. Be aware that all tensors are already on the GPU and use USM. You can directly use the data pointers and pointer arithmetic. There is no need to define sycl::buffer or sycl::accessor to access the data.
+{% endif -%}
+8. Do not capture constexpr variables in lambda functions passed to kernel launches as this can lead to different lambda sizes between the host and device compiler.
+
+## Final instructions
+
+1. Clearly comment on the parameters you convert to templated parameters.
+2. If you change the kernel structure, explain why.
+3. Anticipate and address possible runtime or compilation errors.
+
+Please structure your response as follows:
+
+1. Analysis:  Explain your proposed changes and optimizations.
+2. Improved {{ language }} code: Provide the complete, improved {{ language }} code in a code block:
+
+```{{ language }}
+Your code here
+```

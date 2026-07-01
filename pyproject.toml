@@ -17,10 +17,46 @@ dependencies = [
     "numpy>=1.26",
     "pytest",
     "pytest-dependency",
-    "ninja"
+    "ninja",
 ]
 
 [project.optional-dependencies]
+ui = [
+    "nicegui<=3.6.0",
+    "pandas",
+    "pygraphviz",
+    "sqlalchemy",
+    "fastapi",
+    "networkx"
+]
+algo = [
+    "autoroot",
+    "modal",
+    "openai",
+    "boto3",
+    "packaging",
+    "hydra-core",
+    "pydra_config",
+    "tqdm",
+    "einops",
+    "scipy",
+    "clang==20.1.5",
+    "pybind11",
+    "openvino", # for baseline times (torch.compile)
+    "pyopencl",
+    "authlib",
+    "paramiko",
+    "ittapi",
+    "beautifulsoup4",
+    "uvicorn",
+    "celery[msgpack]",
+    "python-multipart",
+    "requests",
+    "sqlalchemy",
+    "psycopg2-binary",
+    "cmake",
+    "omegaconf"
+]
 dev = [
     "black >= 26, < 27",
     "python-semantic-release",
@@ -30,6 +66,13 @@ docs = [
     "shibuya", # sphinx theme
     "sphinx-copybutton",
 ]
+mcp = [
+    "fastmcp",
+    "httpx",
+    "pyyaml",
+    "omegaconf"
+]
+all = [ "kernelfoundry[ui,algo,dev,docs,mcp]" ]
 
 [project.urls]
 Homepage = "https://github.com/isl-org/kernelfoundry"

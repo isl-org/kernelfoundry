@@ -37,6 +37,9 @@ extensions = [
 # Turn on sphinx.ext.autosummary
 autosummary_generate = True
 
+# Mock celery as it transforms decorated functions into Task objects, hiding signatures from autodoc
+autodoc_mock_imports = ["celery"]
+
 # Napoleon settings for Google-style docstrings
 napoleon_google_docstring = True
 napoleon_numpy_docstring = False

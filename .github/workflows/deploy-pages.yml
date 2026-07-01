@@ -1,0 +1,73 @@
+name: Deploy Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+  workflow_call:
+
+jobs:
+  deploy-pages:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      id-token: write
+      pages: write
+    runs-on: ubuntu-latest
+    concurrency: deploy-pages
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Checkout website repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/kernelfoundry.website
+          token: ${{ secrets.WEBSITE_REPO_READ_TOKEN }}
+          path: website
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Create virtual environment
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
+          echo "$VIRTUAL_ENV/bin" >> $GITHUB_PATH
+
+      - name: Install documentation dependencies
+        run: |
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install .[all]
+
+      - name: Build documentation
+        run: |
+          source .venv/bin/activate
+          cd docs
+          make clean
+          make html
+
+      - name: Merge docs into website html
+        run: |
+          mkdir -p website/docs
+          rm -rf website/docs/*
+          cp -r docs/_build/html/* website/docs/
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: website/
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

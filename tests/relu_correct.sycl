@@ -1,0 +1,128 @@
+#include <sycl/sycl.hpp>
+#include <torch/extension.h>
+#include <c10/xpu/XPUStream.h>
+#include <cstdint>
+
+namespace {
+
+// Utility to round up to a multiple
+static inline size_t round_up(size_t x, size_t a) {
+    return (x + a - 1) / a * a;
+}
+
+// Single-kernel, alignment-aware, vectorized ReLU.
+// - No host<->device copies: operate directly on USM pointers.
+// - Uses vec<float,4> when both pointers are 16B-aligned; otherwise falls back to scalar.
+// - Uses grid-stride loops to reduce launch overhead and balance load.
+// - Tail is handled in the same kernel to avoid extra launches.
+// - Local size chosen dynamically, clamped to device limits and aligned to subgroup size (16 on Arc).
+static void relu_sycl_vec_or_scalar(torch::Tensor x, torch::Tensor out, int64_t size) {
+    const float* x_ptr = x.data_ptr<float>();
+    float* out_ptr = out.data_ptr<float>();
+
+    sycl::queue& q = c10::xpu::getCurrentXPUStream().queue();
+    const sycl::device dev = q.get_device();
+
+    // Prefer 256 for Arc (Xe-HPG), clamp to device maximum and align to subgroup size.
+    const size_t max_wg = dev.get_info<sycl::info::device::max_work_group_size>();
+    // Subgroup size on Arc is typically 16; keep WG a multiple of 16.
+    const size_t subgroup = 16;
+    size_t local_size = 256;
+    if (local_size > max_wg) local_size = max_wg;
+    local_size = (local_size / subgroup) * subgroup;
+    if (local_size == 0) local_size = subgroup;
+
+    // Alignment check for safe vec<float,4> use
+    const bool aligned16 = ((reinterpret_cast<std::uintptr_t>(x_ptr) & 0xF) == 0) &&
+                           ((reinterpret_cast<std::uintptr_t>(out_ptr) & 0xF) == 0);
+
+    const int64_t vec_width = 4;
+    const bool use_vec = aligned16 && (size >= vec_width);
+    const int64_t n_vec = use_vec ? (size / vec_width) : 0;
+    const int64_t vec_tail_start = use_vec ? (n_vec * vec_width) : 0;
+
+    // Choose the base "work items" to size the ND-range.
+    // If using vec path, base is number of vec elements; otherwise, scalar elements.
+    const size_t base_items = static_cast<size_t>(use_vec ? n_vec : size);
+    // Ensure at least 1 work-item to avoid submitting an empty kernel (when size > 0).
+    const size_t nonzero_items = (base_items > 0) ? base_items : 1;
+
+    const size_t global_size = round_up(nonzero_items, local_size);
+
+    q.submit([&](sycl::handler& h) {
+        // Capture pointers and sizes by value
+        const float* __restrict in = x_ptr;
+        float* __restrict outp = out_ptr;
+        const int64_t N = size;
+        const int64_t NV = n_vec;
+        const int64_t TAIL_START = vec_tail_start;
+        const bool VEC = use_vec;
+
+        h.parallel_for<class ReLUKernelVecTail>(
+            sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
+            [=](sycl::nd_item<1> it)
+            [[sycl::reqd_sub_group_size(16)]] {
+                const size_t gid = it.get_global_linear_id();
+                const size_t gsize = it.get_global_range(0);
+
+                if (VEC) {
+                    // Vectorized main loop: process 4 floats per iteration
+                    const auto* x4 = reinterpret_cast<const sycl::vec<float, 4>*>(in);
+                    auto* y4 = reinterpret_cast<sycl::vec<float, 4>*>(outp);
+
+                    for (size_t idx = gid; idx < static_cast<size_t>(NV); idx += gsize) {
+                        sycl::vec<float, 4> v = x4[idx];
+
+                        // Branchless ReLU via fmax
+                        sycl::vec<float, 4> y;
+                        y[0] = sycl::fmax(v[0], 0.0f);
+                        y[1] = sycl::fmax(v[1], 0.0f);
+                        y[2] = sycl::fmax(v[2], 0.0f);
+                        y[3] = sycl::fmax(v[3], 0.0f);
+
+                        y4[idx] = y;
+                    }
+
+                    // Scalar tail for remaining elements (0..3)
+                    for (size_t i = TAIL_START + gid; i < static_cast<size_t>(N); i += gsize) {
+                        float v = in[i];
+                        outp[i] = sycl::fmax(v, 0.0f);
+                    }
+                } else {
+                    // Scalar-only path (unaligned or very small sizes)
+                    for (size_t i = gid; i < static_cast<size_t>(N); i += gsize) {
+                        float v = in[i];
+                        outp[i] = sycl::fmax(v, 0.0f);
+                    }
+                }
+            }
+        );
+    });
+
+    // No wait here: rely on PyTorch XPU stream semantics to preserve ordering and allow overlap.
+}
+
+} // namespace
+
+// PyTorch extension forward function: ReLU
+torch::Tensor forward(torch::Tensor x) {
+    TORCH_CHECK(x.is_floating_point(), "Input must be a floating-point tensor.");
+    TORCH_CHECK(x.dtype() == torch::kFloat32, "Only float32 tensors are supported in this kernel.");
+
+    auto x_contig = x.contiguous();
+    auto out = torch::empty_like(x_contig);
+
+    const int64_t size = x_contig.numel();
+    if (size == 0) {
+        return out;
+    }
+
+    // Operate directly on USM device pointers provided by PyTorch XPU.
+    relu_sycl_vec_or_scalar(x_contig, out, size);
+
+    return out;
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("forward", &forward, "Elementwise ReLU forward (SYCL, USM, vectorized, single-kernel)");
+}

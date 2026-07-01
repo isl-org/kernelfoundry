@@ -1,0 +1,53 @@
+# @package _global_
+defaults:
+  - override /paths: default
+  - override /inference: ensemble
+  - override /database: evolve_db_optimization_aware
+  - override /prompt: meta_prompting
+  - override /task_set: default
+  
+job_name: paper_cuda_robustkbench
+
+language: CUDA
+gpu_arch: Ampere
+branches_per_iteration: 8
+stop_once_correct: False
+
+# Enable QD Gradient Tracking
+use_gradient_tracking: true
+gradient_sampling_weight: 0.3  # Blend 30% gradient-informed sampling with 70% standard
+  
+# Fine-tune gradient computation (optional)
+gradient_config:
+  max_history: 10000          # Transitions to remember
+  max_cell_cache: 256         # Cell statistics cache size
+  fitness_weight: 0.4         # Weight for fitness gradient
+  improvement_rate_weight: 0.4 # Weight for improvement rate
+  exploration_weight: 0.2     # Weight for exploring empty cells
+  checkpoint_interval: 100    # Save gradient data every N transitions
+
+# Optimization-aware prompting configuration
+enable_esimd_exploration: False
+use_optimization_aware_prompting: True
+exploration_strategy: mutate  # Options: mutate, intensify, diversify
+use_exploration_prompts: True
+
+task_set:
+  origin: robust_kbench
+  level: 0
+  load_from_db: True
+  use_representative: True
+
+# use same models as robust-kbench paper (o3, o4-mini, GPT-4.1)
+# inference: 
+# TODO: use OpenAI API or Anthropic. 
+
+# Enable templated kernels
+prompt:
+  diff_format: False
+  template:
+    allow_templated: False
+
+# they use 40 iterations with 8 branches
+max_iters: 40 
+

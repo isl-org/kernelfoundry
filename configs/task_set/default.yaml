@@ -1,0 +1,16 @@
+# Problem Specification
+origin: KernelBench
+level: 1
+# use only representative set
+use_representative: True
+# subset of problems to evaluate
+# (start_id, end_id), these are the logical index
+subset:
+  - null
+  - null 
+
+# subset of the kernels which we use for evaluating the finetuned models
+use_finetune_test_set: False
+
+# whether to load the task reference from db (if False, uses local csv file)
+load_from_db: False

@@ -1,0 +1,112 @@
+{#
+Args:
+    kernels: A dictionary of kernel analysis results, where the key is the kernel name and the value is an object containing the analysis results for that kernel.
+        The structure of the dictionary is as follows:
+        {
+            "kernel_name": {
+                "runtime": float,  # The average runtime of the kernel in milliseconds
+                "launch_config": str,  # The launch configuration of the kernel (e.g., "[SIMD32 {1000,1,1} {256,1,1}]")
+                "thread_occupancy": float,  # The thread occupancy of the kernel in percentage
+                "bound": str,  # The bottleneck type of the kernel, either "compute", "memory", or "balanced"
+                "alu_util": [  # A list of ALU utilization objects, sorted by utilization percentage in descending order
+                    {
+                        "name": str,  # The name of the ALU resource (e.g., "ALU0", "ALU1", etc.)
+                        "util_pct": float,  # The utilization percentage of this ALU resource
+                        "instr_mix": [  # A list of instruction mix objects for this ALU resource
+                            {
+                                "name": str,  # The name of the instruction type (e.g., "FP16", "INT64", etc.)
+                                "pct": float,  # The percentage of this instruction type in the instruction mix for this ALU resource
+                            },
+                            ...
+                        ],
+                    },
+                    ...
+                ],
+                "gmem_bandwidth_pct": float,  # The percentage of peak global memory bandwidth utilized by the kernel
+                "slm_bandwidth_pct": float,  # The percentage of peak shared local memory bandwidth utilized by the kernel
+                "ve_stall_pct": float,  # The percentage of time vector engines are stalled waiting for memory operations to complete
+                "slm_conflicts_pct": float,  # The percentage of shared local memory accesses causing bank conflicts
+            },
+            ...
+        }
+#}
+{% for kernel_name, k in kernels.items() %}
+## Analysis of kernel {{ kernel_name }}:
+
+### Runtime and Occupancy:
+The launch configuration of the kernel is {{ k.launch_config }}.
+The average runtime of the kernel is {{ "{:.2f}".format(k.runtime) }} ms.
+{% if k.thread_occupancy %}
+The thread occupancy is {{ "{:.2f}".format(k.thread_occupancy) }}%.
+{% endif %}
+The vector engine stall rate is {{ "{:.2f}".format(k.ve_stall_pct) }}%
+
+### Roofline Analysis:
+{% if k.bound == 'compute' %}
+The kernel is using compute more than memory bandwidth.
+{% elif k.bound == 'memory' %}
+The kernel is using memory bandwidth more than compute. 
+{% else %}
+The kernel is balanced between compute and memory bandwidth. 
+{% endif %}
+The highest utilized compute resource is {{ k.alu_util[0].name }} with {{ "{:.2f}".format(k.alu_util[0].util_pct) }}% utilization.
+The utilized global memory bandwidth is {{ "{:.2f}".format(k.gmem_bandwidth_pct) }}% of the peak memory bandwidth. 
+{% if k.slm_bandwidth_pct > 0 and k.slm_bandwidth_pct > k.gmem_bandwidth_pct %}
+The utilized shared local memory bandwidth is {{ "{:.2f}".format(k.slm_bandwidth_pct) }}% of the peak SLM bandwidth.
+{% endif %}
+
+### Bottleneck Analysis:
+{% if k.bound == 'compute' %}
+{% set compute_breakdown_block %}
+{{ k.alu_util[0].name }} is the highest utilized compute resource with {{ "{:.2f}".format(k.alu_util[0].util_pct) }}% utilization, which is likely the bottleneck for this kernel.
+The instruction mix is:
+    {% for instr in k.alu_util[0].instr_mix %}
+        {% if instr.pct > 0 %}
+- {{ instr.name }}: {{ "{:.2f}".format(instr.pct) }}%
+        {% endif %}
+    {% endfor %}
+    {% for alu in k.alu_util[1:] %}
+
+        {% if alu.util_pct > 0 %}
+The utilization of {{ alu.name }} is {{ "{:.2f}".format(alu.util_pct) }}%. 
+The instruction mix is:
+            {% for instr in alu.instr_mix %}
+                {% if instr.pct > 0 %}
+- {{ instr.name }}: {{ "{:.2f}".format(instr.pct) }}%
+                {% endif %}
+            {% endfor %}
+        {% else %}
+            {% if alu.name == "ALU2" %}
+ALU2 providing hardware acceleration for matrix multiplications with XMX instructions is not utilized.
+            {% else %}
+{{ alu.name }} ({% for instr in alu.instr_mix %}{{ instr.name }}{{ ", " if not loop.last else "" }}{% endfor %}) is not utilized.
+            {% endif %}
+        {% endif %}
+    {% endfor %}
+{% endset %}
+{{ compute_breakdown_block }}
+To improve compute performance try to shift the instruction mix towards more efficient instructions or better balance the utilization of different compute resources.
+{% elif k.bound == 'memory' %}
+{% set memory_breakdown_block %}
+The kernel's global memory bandwidth is {{"{:.2f}".format(k.gmem_bandwidth) }} GB/s, which is {{ "{:.2f}".format(k.gmem_bandwidth_pct) }}% of the peak bandwidth.
+The vector engines are stalled for {{ "{:.2f}".format(k.ve_stall_pct) }}% of the time likely waiting for memory operations to complete.
+{% if k.slm_bandwidth_pct == 0 %}
+The kernel does not make use of shared local memory. Consider using shared local memory to reduce global memory bandwidth pressure.
+{% elif k.slm_bandwidth_pct > 70 %}
+The kernel is heavily utilizing shared local memory ({{ "{:.2f}".format(k.slm_bandwidth_pct) }}% of the peak shared local memory bandwidth), which may be a bottleneck.
+{% endif %}
+{% if k.slm_bandwidth_pct > 0 and k.slm_conflicts_pct > 0%}
+The percentage of shared local memory accesses causing bank conflicts is {{ "{:.2f}".format(k.slm_conflicts_pct) }}%. 
+Consider optimizing shared local memory access patterns to reduce bank conflicts.
+{% endif %}
+{% endset %}
+{{ memory_breakdown_block }}
+{% else %}
+The kernel is balanced between compute and memory bandwidth. 
+To improve performance compute and memory bandwidth should be improved together.
+{{ compute_breakdown_block }}
+{{ memory_breakdown_block }}
+{% endif %}
+
+
+{% endfor %}

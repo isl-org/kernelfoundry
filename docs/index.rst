@@ -1,46 +1,39 @@
 .. kernelfoundry documentation master file
 
-Welcome to kernelfoundry's documentation!
+Welcome to KernelFoundry's documentation!
 ==========================================
 
-KernelFoundry is a Python package for defining and evaluating GPU kernel tasks.
+KernelFoundry is an open-source framework for hardware-aware GPU kernel
+optimization. It provides an evolutionary kernel generation algorithm
+alongside a kernel evaluation pipeline for testing and benchmarking.
 
-This package provides the task-side tooling used to compile candidate kernels,
-validate correctness, and measure runtime performance in a consistent pytest-based
-workflow.
+The core workflow prompts a large language model to transpile or rewrite
+operators into optimized GPU kernels.
+Each iteration feeds compile results, correctness outcomes, runtime
+measurements and profiling data back.
 
-What kernelfoundry provides
+What KernelFoundry Includes
 ---------------------------
 
-- A base task interface via ``TestBase`` (import with ``from kernelfoundry import TestBase``).
-- Build helpers to compile kernel sources (SYCL and CUDA).
-- Pytest fixtures for toggling reference implementations, collecting performance
-    samples, and handling template parameters.
-- Validation utilities for numerical comparison of kernel output.
-- Runtime measurement and system-info utilities for reproducible benchmarking.
-
-Typical task workflow
----------------------
-
-1. Implement a task test class derived from ``TestBase``.
-2. Build candidate kernel artifacts (optionally using
-     ``TestBase.compile_torch_extension``).
-3. Run correctness tests against a reference implementation.
-4. Run performance tests (``@pytest.mark.performance``) and collect timing data.
-5. Optionally export profiling results with ``--performance-out``.
+- Kernel generation algorithm based on Map-Elits evolutionary search and meta-prompting.
+- Evaluation pipeline for correctness checks, runtime benchmarking, and profiler feedback.
+- Web UI for monitoring jobs, comparing kernels, and inspecting optimization progress.
+- MCP server to integrate the KF test harness with an agentic workflow.
 
 Installation
 ------------
 
-Install the package and basic dependencies with::
+Install the base package with::
 
     pip install .
 
-The package requires Python 3.10+ (commonly used with Python 3.12). Install into a virtual environment if desired.
+KernelFoundry requires Python 3.10+.
 
-For documentation building, install the docs dependencies::
+For full functionality including generation pipeline, install::
 
-    pip install .[docs]
+    pip install .[all]
+
+For full setup options, see the repository README.
 
 API Reference
 -------------

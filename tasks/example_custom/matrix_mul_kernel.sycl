@@ -1,0 +1,63 @@
+#include <sycl/sycl.hpp>
+#include <torch/extension.h>
+#include <pybind11/pybind11.h>
+#include <iostream>
+#include <string>
+#include <c10/xpu/XPUStream.h>
+
+namespace py = pybind11;
+
+// Markers for defining the code region to be evolved by the pipeline
+// [EVOLVE_START]
+
+void sycl_matmul_kernel(const float* A,
+                        const float* B,
+                        float* C,
+                        int M, int K, int N) {
+    sycl::queue& q = c10::xpu::getCurrentXPUStream().queue();
+    sycl::range<2> global{ static_cast<size_t>(M), static_cast<size_t>(N) };
+
+    q.submit([&](sycl::handler &h) {
+        h.parallel_for<class MatmulKernel>(global, [=](sycl::id<2> idx) {
+            int row = idx[0];
+            int col = idx[1];
+
+            float acc = 0.f;
+            for (int k = 0; k < K; ++k) {
+                acc += A[row * K + k] * B[k * N + col];
+            }
+            C[row * N + col] = acc;
+        });
+    });
+    q.wait_and_throw();
+}
+// [EVOLVE_END]
+
+// Torch wrapper
+torch::Tensor torch_sycl_matmul(torch::Tensor A, torch::Tensor B) {
+    TORCH_CHECK(A.dim() == 2 && B.dim() == 2, "Inputs must be 2D");
+    TORCH_CHECK(A.dtype() == torch::kFloat32 && B.dtype() == torch::kFloat32, "Only float32 supported");
+    TORCH_CHECK(A.device() == B.device(), "Tensors must be on the same device");
+    
+    int64_t M = A.size(0);
+    int64_t K = A.size(1);
+    TORCH_CHECK(B.size(0) == K, "Inner dimensions mismatch");
+    int64_t N = B.size(1);
+
+    auto options = torch::TensorOptions().dtype(torch::kFloat32).device(A.device());
+    torch::Tensor C = torch::empty({M, N}, options);
+
+    // Launch SYCL kernel
+    sycl_matmul_kernel(A.data_ptr<float>(), B.data_ptr<float>(), C.data_ptr<float>(),
+                       static_cast<int>(M), static_cast<int>(K), static_cast<int>(N));
+
+    return C;
+}
+
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("sycl_matmul", &torch_sycl_matmul,
+          py::arg("A"), py::arg("B"), 
+          "Matrix multiply (A x B) using a simple SYCL kernel (float32, GPU tensors).");
+}
+

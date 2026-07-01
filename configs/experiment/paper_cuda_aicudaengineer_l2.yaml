@@ -1,0 +1,51 @@
+# @package _global_
+defaults:
+  - override /paths: default
+  - override /inference: server
+  - override /database: evolve_db_optimization_aware
+  - override /prompt: meta_prompting
+  - override /task_set: default
+
+language: CUDA
+gpu_arch: Ampere
+branches_per_iteration: 4
+max_iters: 40
+stop_once_correct: False
+
+# Enable QD Gradient Tracking
+use_gradient_tracking: true
+gradient_sampling_weight: 0.3  # Blend 30% gradient-informed sampling with 70% standard
+  
+# Fine-tune gradient computation (optional)
+gradient_config:
+  max_history: 10000          # Transitions to remember
+  max_cell_cache: 256         # Cell statistics cache size
+  fitness_weight: 0.4         # Weight for fitness gradient
+  improvement_rate_weight: 0.4 # Weight for improvement rate
+  exploration_weight: 0.2     # Weight for exploring empty cells
+  checkpoint_interval: 100    # Save gradient data every N transitions
+
+# Optimization-aware prompting configuration
+enable_esimd_exploration: False
+use_optimization_aware_prompting: True
+exploration_strategy: mutate  # Options: mutate, intensify, diversify
+use_exploration_prompts: True
+
+job_name: paper_aicudaengineer_l2
+
+# use representative subset for level 1
+task_set:
+  level: 2
+  use_representative: True
+
+# use same models as their paper: deepseek v3, sonnet 3.5, deepseek R1, o1 preview, o1, o3-mini -> We only have o3-mini out of those!
+inference:
+  model_name: "o3-mini"  # see top of kernel_bench/inference_server.py for all options
+  max_tokens: 8000
+  temperature: 0.3
+
+# Enable templated kernels
+prompt:
+  diff_format: False
+  template:
+    allow_templated: false

@@ -1,0 +1,18 @@
+job_name: job_name_PLACEHOLDER # A name for the job, e.g., experiment name or model name
+task_name: Op_name_PLACEHOLDER # Long name for task
+Op_ID: Op_ID_PLACEHOLDER # Short name or numeric code for operation
+gpu_arch: gpu_arch_PLACEHOLDER # Short name of the target architecture
+language: language_PLACEHOLDER # The target language
+level: level_PLACEHOLDER
+
+task_origin: KernelBench
+
+test_reference: true # If true will run the tests and profiling for the reference too
+
+has_reference_build_step: false # In KernelBench all references are pytorch code
+
+hyperparameters:
+  # build-time parameters are passed to the build function in task.py
+  buildtime: null
+  # runtime parameters are passed to pytest and are available through the fixture hyperparams
+  runtime: null
