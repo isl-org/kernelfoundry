@@ -1,0 +1,86 @@
+"""
+Define extraction patterns, file endings, and profiler for all supported languages
+"""
+
+SUPPORTED_LANGUAGES = ["cuda", "sycl", "triton", "ocl"]
+
+# extraction patterns for code blocks, e.g. ```CUDA
+EXTRACT_CODE_LANGUAGES = ["cuda", "sycl", "python", "cpp", "triton", "ocl"]
+
+
+KERNEL_OPTIMIZATION_TIPS = {
+    "SYCL": [
+        "Coalesced Access: Ensure work-items in the same sub-group access contiguous memory addresses. For row-major data, have adjacent work-items access adjacent columns. Use sycl::id linearization that matches your data layout.",
+        "Use Local Memory Strategically: Use sycl::local_accessor for data reused across work-items in a work-group. Prefer tile-based algorithms where each work-group loads a tile into local memory, processes it, then moves to the next tile.",
+        "Minimize Global Memory Access: Cache frequently accessed values in private variables (registers). Use read-only accessors (sycl::read_only) to enable hardware caching optimizations. Consider sycl::accessor with no_init property when output-only.",
+        "Avoid Bank Conflicts: Local memory is organized into banks (typically 32 banks of 4 bytes each). Pad shared arrays to avoid stride conflicts, e.g., local_accessor<float, 1> tile(range<1>(TILE_SIZE + 1), h) for strided access patterns.",
+        "Maximize Occupancy: Balance work-group size with register/local memory usage. Use [[intel::reqd_sub_group_size(N)]] to control sub-group size. Profile with sycl::info::kernel_work_group to query optimal sizes. Typical work-group sizes: 64-256 for compute-bound, 32-128 for memory-bound kernels.",
+        "Leverage Vectorization: Use sycl::vec<T, N> (N=2,4,8,16) for explicit SIMD. For Intel GPUs, align with native SIMD width (8 for FP32, 16 for FP16). Use sycl::vec::load() and store() for aligned vector memory access.",
+        "Reduce Divergent Branches: Keep all work-items in a sub-group on the same execution path. Move divergent code outside the kernel or restructure to process uniform batches.",
+        "Use Predication: Replace if(cond) x = a; else x = b; with x = cond ? a : b; or x = sycl::select(b, a, cond);. Use masked operations for boundary handling.",
+        "Kernel Fusion: Combine multiple small kernels into one to eliminate intermediate global memory writes and reduce launch overhead. Use local synchronization (sycl::group_barrier) between logical kernel phases.",
+        "Loop Unrolling: Use #pragma unroll N or [[unroll(N)]] for small, fixed-iteration loops. Prefer compile-time loop bounds.",
+        "Exploit Sub-groups: Use sycl::sub_group for warp/wavefront-level operations. Use sycl::reduce_over_group(sg, val, op), sycl::group_broadcast(sg, val, id), sycl::shift_group_left/right(sg, val, delta) for efficient intra-sub-group communication. NEVER use .shuffle() or .shuffle_down() - these are not valid SYCL 2020 API! Use [[intel::reqd_sub_group_size(16)]] for Intel GPUs.",
+        "Minimize Synchronization: Reduce sycl::group_barrier() calls. Consider sub-group operations which are barrier-free. Use work-group-level reductions only when necessary.",
+        "Minimize Host-Device Transfers: Use sycl::malloc_device for persistent device allocations. Chain kernels using device pointers without copying back to host. Use depends_on() for proper dependency tracking instead of explicit waits.",
+        "Use Specialization Constants: Define compile-time constants with sycl::specialization_id for kernel specialization without recompilation overhead.",
+        "Prefetch Data: Use sycl::group::async_work_group_copy() or sycl::joint_prefetch() to overlap computation with memory access.",
+        "Exploit Read-Only Cache: Use sycl::read_only access mode and consider constant memory for frequently accessed constants to leverage texture/constant cache.",
+        "Use Appropriate Data Types: Prefer sycl::half (FP16) or sycl::ext::oneapi::bfloat16 when precision allows - doubles throughput on many GPUs. Use integer types appropriately sized for your data.",
+    ],
+    "CUDA": [
+        "Ensure global memory accesses are coalesced for maximum bandwidth.",
+        "Use shared memory to cache frequently accessed data and reduce global memory traffic.",
+        "Minimize global memory transactions; reuse data in registers or shared memory.",
+        "Avoid shared memory bank conflicts by structuring access patterns carefully.",
+        "Maximize occupancy by tuning block size and grid size for your GPU.",
+        "Leverage CUDA's built-in vector types or process multiple elements per thread.",
+        "Reduce divergent branches within warps to prevent serialization.",
+        "Use arithmetic operations instead of branches when possible (predication).",
+        "Fuse small kernels to reduce launch overhead and improve data locality.",
+        "Unroll loops manually or with compiler directives to increase instruction-level parallelism.",
+        "Use warp-level primitives (e.g., __shfl_sync) for efficient intra-warp communication.",
+        "Minimize synchronization (e.g., __syncthreads) within kernels.",
+        "Keep data on the device as much as possible to reduce host-device transfer overhead.",
+    ],
+    "triton": [
+        "Coalesce global memory accesses by aligning and grouping memory operations for maximum bandwidth.",
+        "Choose BLOCK_SIZE and grid dimensions to maximize occupancy and match hardware capabilities.",
+        "Use shared memory (tl.shared_memory) to cache data reused by multiple threads and reduce global memory traffic.",
+        "Minimize redundant memory loads by reusing data in registers or shared memory.",
+        "Avoid shared memory bank conflicts by structuring access patterns carefully.",
+        "Reduce divergent control flow within a block to prevent serialization.",
+        "Use predication (masking) instead of branching to handle boundary conditions efficiently.",
+        "Process multiple elements per program instance to increase arithmetic intensity and amortize overhead.",
+        "Unroll small, fixed-size loops manually to increase instruction-level parallelism.",
+        "Tune kernel launch parameters (BLOCK_SIZE, grid shape) for your hardware and problem size.",
+        "Minimize synchronization (e.g., tl.barrier()) within kernels to avoid serialization.",
+        "Prefer fast math operations and fused multiply-adds when possible.",
+        "Keep data on the device as much as possible to reduce host-device transfer overhead.",
+        "Exploit hardware features such as tensor cores if available and supported by Triton.",
+        "Use tl.arange and tl.full efficiently for index generation and tensor initialization.",
+        "Align input tensors in memory for efficient access.",
+        "Fuse operations into a single kernel when possible to reduce launch overhead and improve data locality.",
+    ],
+    "OCL": [
+        "Coalesced Access: Ensure work-items in the same wavefront/warp access contiguous memory addresses. For row-major data, have adjacent work-items (consecutive get_global_id(0)) access adjacent memory locations. Use linear indexing that matches your data layout.",
+        "Use Local Memory Strategically: Use __local memory for data reused across work-items in a work-group. Implement tile-based algorithms where each work-group loads a tile into local memory, processes it, then moves to the next tile. Declare with __local float tile[TILE_SIZE].",
+        "Minimize Global Memory Access: Cache frequently accessed values in private variables (registers). Use __constant address space for read-only data to enable hardware caching. Use __global const restrict for read-only buffers to hint compiler optimizations.",
+        "Avoid Bank Conflicts: Local memory is organized into banks (typically 32 banks). Pad shared arrays to avoid stride conflicts, e.g., __local float tile[TILE_SIZE][TILE_SIZE + 1] for transpose operations. Use sequential access patterns within wavefronts.",
+        "Maximize Occupancy: Balance work-group size with register/local memory usage. Query CL_KERNEL_WORK_GROUP_SIZE and CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE. Typical work-group sizes: 64-256 for compute-bound, 32-128 for memory-bound kernels. Use multiples of wavefront/warp size (32 for NVIDIA, 64 for AMD).",
+        "Leverage Vectorization: Use vector types (float4, float8, float16) for explicit SIMD. Use vloadN() and vstoreN() for unaligned vector memory access. For aligned access, cast pointers: ((__global float4*)ptr)[idx]. Match native vector width of target device.",
+        "Reduce Divergent Branches: Keep all work-items in a wavefront/warp on the same execution path. Move divergent code outside the kernel or restructure to process uniform batches. Group similar work together.",
+        "Use Predication: Replace if(cond) x = a; else x = b; with x = select(b, a, cond) for scalar types or x = cond ? a : b. Use select() for vector types: result = select(false_val, true_val, condition).",
+        "Kernel Fusion: Combine multiple small kernels into one to eliminate intermediate global memory writes and reduce launch overhead. Use barrier(CLK_LOCAL_MEM_FENCE) between logical kernel phases within a work-group.",
+        "Loop Unrolling: Use #pragma unroll N for small, fixed-iteration loops. Manually unroll critical loops when compiler doesn't optimize. Prefer compile-time loop bounds.",
+        "Exploit Sub-groups (OpenCL 2.0+): Use sub-group functions for wavefront-level operations: sub_group_reduce_add(), sub_group_broadcast(), intel_sub_group_shuffle(), intel_sub_group_shuffle_down(). Query sub-group size with get_sub_group_size(). Use __attribute__((intel_reqd_sub_group_size(N))) for Intel GPUs.",
+        "Minimize Synchronization: Reduce barrier() calls. Use barrier(CLK_LOCAL_MEM_FENCE) for local memory only, barrier(CLK_GLOBAL_MEM_FENCE) when needed for global. Sub-group operations are barrier-free. Use work-group-level reductions only when necessary.",
+        "Minimize Host-Device Transfers: Use CL_MEM_READ_ONLY, CL_MEM_WRITE_ONLY flags appropriately. Chain kernels using clEnqueueNDRangeKernel with event dependencies instead of clFinish(). Use persistent device allocations across multiple kernel launches.",
+        "Use Kernel Attributes: Use __attribute__((reqd_work_group_size(X,Y,Z))) to specify fixed work-group size for compiler optimization. Use __attribute__((vec_type_hint(float4))) to hint vectorization opportunities.",
+        "Async Memory Operations: Use async_work_group_copy() to overlap computation with memory transfers between global and local memory. Use async_work_group_strided_copy() for non-contiguous data. Wait with wait_group_events().",
+        "Exploit Constant Cache: Use __constant address space (limited to ~64KB) for frequently accessed read-only data. Declare as __constant float coeffs[N]. All work-items should access same location simultaneously for best performance.",
+        "Use Appropriate Data Types: Use half (FP16) when precision allows - doubles throughput on many GPUs. Use native_* math functions (native_sqrt, native_divide) for faster, less precise operations. Use mad() for fused multiply-add. Size integer types appropriately (char, short, int).",
+        "Memory Alignment: Align data structures to vector boundaries. Use __attribute__((aligned(N))) where N is 16, 32, or 64. Ensure global memory allocations are aligned for coalesced access.",
+        "Use Built-in Functions: Prefer built-in functions (mad, fma, dot, cross, length) over manual implementations. Use fast_* variants (fast_normalize, fast_length) when precision allows. Use native_* for maximum speed with reduced precision.",
+    ],
+}

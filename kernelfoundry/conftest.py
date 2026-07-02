@@ -106,6 +106,21 @@ def profile_store(request) -> dict:
             json.dump(store, f)
 
 
+@pytest.fixture(autouse=True)
+def profiler_test_label(request):
+    """Expose the current pytest node id to runtime helpers used during profiling."""
+    env_var = "KERNELFOUNDRY_PROFILE_LABEL"
+    previous_value = os.environ.get(env_var)
+    os.environ[env_var] = request.node.nodeid
+    try:
+        yield
+    finally:
+        if previous_value is None:
+            os.environ.pop(env_var, None)
+        else:
+            os.environ[env_var] = previous_value
+
+
 @pytest.fixture
 def measure_runtime_torch(request, profile_store) -> Callable:
     """Create a torch runtime measurement helper with shared output.
@@ -117,10 +132,10 @@ def measure_runtime_torch(request, profile_store) -> Callable:
     Returns:
         Callable: Wrapped measure_runtime_torch callable.
 
-        The callable is :func:`kernelfoundry.utils.performance.measure_runtime_torch`
+        The callable is :func:`kernelfoundry.eval_pipeline.utils.performance.measure_runtime_torch`
         with the `use_itt` and `output` parameters pre-configured.
     """
-    from kernelfoundry.utils.performance import measure_runtime_torch as _measure_runtime_torch
+    from kernelfoundry.eval_pipeline.utils.performance import measure_runtime_torch as _measure_runtime_torch
 
     use_itt = request.config.getoption("--itt")
     profile_store[request.node.nodeid] = []
@@ -160,10 +175,10 @@ def measure_runtime(request, profile_store) -> Callable:
     Returns:
         Callable: Wrapped measure_runtime callable.
 
-            The callable is :func:`kernelfoundry.utils.performance.measure_runtime`
+            The callable is :func:`kernelfoundry.eval_pipeline.utils.performance.measure_runtime`
             with the `use_itt` and `output` parameters pre-configured.
     """
-    from kernelfoundry.utils.performance import measure_runtime as _measure_runtime
+    from kernelfoundry.eval_pipeline.utils.performance import measure_runtime as _measure_runtime
 
     use_itt = request.config.getoption("--itt")
     profile_store[request.node.nodeid] = []

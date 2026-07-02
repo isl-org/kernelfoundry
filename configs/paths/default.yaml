@@ -1,0 +1,11 @@
+
+# path to pytorch functions
+functional_path: "tasks/pytorch_functionals.csv"
+
+# Database URLs used by kf_evolve/database/__init__.py
+# SQLite is the default and requires no external service.
+kernels_db_path: "sqlite:///runs/kernels.sqlite3"
+
+# Optional split URLs (not needed with sqlite).
+kernels_db_readonly_path: null
+kernels_db_insertonly_path: null

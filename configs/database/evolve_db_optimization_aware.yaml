@@ -1,0 +1,76 @@
+_target_: kernelfoundry.algorithm.evolve_database_optimization_aware.OptimizationAwareDatabase
+# Optimization-aware MAP-Elites configuration
+# This configuration uses a streamlined implementation specialized for discrete
+# optimization features extracted from code patterns (no statistical normalization needed)
+
+# Configuration for the program database
+config:
+  # General settings
+  db_path: null # this is from openevolve, specify a path to save the whole database (not as csv)
+  in_memory: true
+
+  # Prompt and response logging to programs/<id>.json
+  log_prompts: true
+
+  # Number of examples to include in the prompt
+  num_top_programs:  1 # 3
+  num_diverse_programs: 0 # 2
+
+  # Evolutionary parameters
+  population_size: 1000
+  archive_size: 100
+  num_islands: 4
+  # programs per island before switching to next island!
+  programs_per_island: 10
+
+  num_inspirations: 2
+
+  # Selection parameters
+  elite_selection_ratio: 0.1
+  exploration_ratio: 0.2 # Sample from current island (diverse)
+  exploitation_ratio: 0.7 # Sample from archive (elite)
+  # remaining 0.2: random sampling across all programs
+  diversity_metric: "edit_distance"  # Options: "edit_distance", "feature_based"
+
+    # Feature dimensions for MAP-Elites grid
+  # Using optimization-aware dimensions to maintain diversity across optimization strategies
+  feature_dimensions:
+    - memory_opt      # 0-3: Memory hierarchy exploitation level
+    - compute_opt     # 0-3: Algorithmic efficiency level
+    - parallelism_opt # 0-3: Parallelism granularity level
+    # - esimd_opt       # 0-3: ESIMD usage level
+
+  # Number of bins per dimension
+  # For optimization features, use 4 bins (matching 0-3 levels)
+  # Can also use dict format for per-dimension bins:
+  feature_bins:
+    memory_opt: 4
+    compute_opt: 4
+    parallelism_opt: 4
+    # esimd_opt: 4
+
+  # Alternative: Traditional feature dimensions
+  # feature_dimensions:
+  #   - complexity  # Code length
+  #   - diversity   # Diversity from reference set
+  #   - score       # Performance score
+
+  # Alternative: Hybrid approach (mix traditional + optimization features)
+  # feature_dimensions:
+  #   - memory_opt
+  #   - score
+  #   - diversity
+  diversity_reference_size: 20 # Size of reference set for diversity calculation
+
+  # Migration parameters for island-based evolution
+  migration_interval: 10  # Migrate every N generations
+  migration_rate: 0.1  # Fraction of population to migrate
+
+  # Random seed for reproducible sampling
+  random_seed: 42 # Optional[int], default is 42
+
+  # Artifact storage
+  artifacts_base_path: null # Optional[str], default is None
+  artifact_size_threshold: 32768 # 32KB threshold
+  cleanup_old_artifacts: true
+  artifact_retention_days: 30.0

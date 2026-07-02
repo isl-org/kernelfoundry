@@ -1,0 +1,164 @@
+# @package _global_
+defaults:
+  - _self_
+  - paths: default
+  - inference: server
+  - database: evolve_db_optimization_aware
+  - prompt: default
+  - task_set: default
+  - experiment: null
+  - override hydra/hydra_logging: disabled
+  - override hydra/job_logging: disabled
+
+hydra:  
+  output_subdir: null
+  run:
+    dir: .
+
+job_name: ???
+task_name: ???
+
+# Path to the task which can be a directory, tar archive or zip file.
+# This is a required field if using the run_custom_task.py script
+task: null 
+
+# Used for storing the tasks in the database. This field is mandatory
+task_origin: null
+job_id: null
+
+# what to generate
+language: null # if null, it will use CUDA on nvidia gpus and SYCL on intel GPUs
+gpu_arch: null # if null, will use Ampere for nvidia and dg2 on intel GPUs
+
+# functional vs class mode (only functional supported currently!)
+mode: "functional"  # "functional" or "class" (functional is ai cuda engineer scheme)
+functional_path: ${paths.functional_path}
+
+# Optional: start from some existing kernels or only generate kernel without eval
+start_from_best: False  # start from the best kernel (highest speedup) generated for this task so far (from db)
+kernels_iter_0_path: null  #  Path to a kernel (e.g. "first_kernel.cpp")
+improve_only_correct: False # only relevant if kernels_iter_0_path is not null
+
+branches_per_iteration: 2
+max_iters: 3
+stop_once_correct: False
+
+# Code postprocessing options
+postprocess_code: true
+postprocess_code_config:
+  fix_sycl_queue_and_wait: true 
+
+###### Feedback LLM ######
+use_feedback_llm: False
+feedback_llm_config:
+  _target_: kernelfoundry.algorithm.inference_server.InferenceServer
+  server_type: "openai"
+  model_name: "gpt-4.1"
+  max_tokens: 2000
+  timeout: 360  # 5 minutes
+  temperature: 0.0
+  num_completions: 1  # number of completions to generate
+  verbose: False
+use_docs_via_keywords: False
+
+validate: False
+
+###### Custom task test settings ######
+use_queue: false # whether to use message queue for custom tasks
+test_reference: true
+reference_gpu_arch: ${gpu_arch}
+
+# custom task build settings
+has_build_step: true
+has_reference_build_step: true
+
+# custom task timeouts
+build_timeout: 200 # timeout compilation (on top level for simplicity of usage)
+test_timeout: 300 # timeout test task
+test_output_inactivity_timeout: 100
+build_output_inactivity_timeout: 150
+
+# hyperparameters
+hyperparameters:
+  # build-time parameters are passed to the build function in task.py
+  buildtime: null
+  # runtime parameters are passed to pytest and are available through the fixture hyperparams
+  runtime: null
+
+###### Evaluation ######
+eval_config:
+  verbose: False
+  build_timeout: ${build_timeout}
+  test_timeout: ${test_timeout}
+  min_length_stdout: 500
+  num_perf_trials: 100 # Number of trials measuring the runtime
+  warmup_min_iters: 10
+  warmup_min_time: 0.1
+  inner_loop_min_time: 0.01 # kernel pass must take at least 0.01 s to avoid overhead of synchronize function
+  unitrace_cmd: unitrace # command or path to unitrace
+  use_queue: ${use_queue} # whether to use message queue TODO: move this out of eval_config
+  profile_custom_model: true
+  profile_original_model: false
+  profile_num_iterations: 5
+  kernel_compiler:
+    _target_: kernelfoundry.compiler.TorchCompiler
+
+# Profiler selection: null/default uses language defaults (sycl→unitrace, ocl→vtune, cuda→ncu)
+# Examples:
+#   profiler_kernel=unitrace profiler_reference=vtune  (different profilers)
+#   profiler_kernel=vtune profiler_reference=vtune  (same profiler for both)
+profiler_kernel: null
+profiler_reference: null
+
+###### Optimization aware evolve config (note: only used if branches_per_iteration>0) ######
+
+# Enable QD Gradient Tracking
+use_gradient_tracking: true
+gradient_sampling_weight: 0.3  # Blend 30% gradient-informed sampling with 70% standard
+
+# Fine-tune gradient computation (optional)
+gradient_config:
+  max_history: 10000          # Transitions to remember
+  max_cell_cache: 256         # Cell statistics cache size
+  fitness_weight: 0.4         # Weight for fitness gradient
+  improvement_rate_weight: 0.4 # Weight for improvement rate
+  exploration_weight: 0.2     # Weight for exploring empty cells
+  checkpoint_interval: 100    # Save gradient data every N transitions
+
+# Optimization-aware prompting configuration
+enable_esimd_exploration: False
+use_optimization_aware_prompting: True
+exploration_strategy: mutate  # Options: mutate, intensify, diversify
+guidance_exploration_rate: 0.0  # Probability [0,1] to use underexplored-region guidance instead of parent guidance
+use_exploration_prompts: True
+
+# KernelBench specific
+Op_ID: null
+level: null
+
+###### General ######
+
+# Logging
+logdir: "runs"
+
+# general
+verbose: True
+debug: True
+max_task_processes: 5 # number of maximal parallel processes in parallel_run
+queue_override_test: null # override the queue for testing the task
+queue_override_build: null # override the queue for building the task
+
+# store kernels in the postgre db
+store_generated_kernels_in_db: true
+
+# resource allocation
+llm_rate_limit: 8
+devices:
+  - 0
+
+# container environment options
+use_container: false # If true run build and test inside a container environment
+environment_build_timeout: 3600 # 60 minutes
+# The image tag to use for the container. This can be either null, a string with
+# the name or a dictionary of the format: {language: {gpu_arch: tag}}
+container_image: null

@@ -5,6 +5,7 @@ __pycache__/
 *.so
 .Python
 build/
+runs/
 develop-eggs/
 dist/
 downloads/
@@ -45,3 +46,11 @@ Thumbs.db
 docs/_build/
 docs/_static/
 docs/api/_autosummary/
+
+# Environment variables
+.env
+
+# Versioning
+IGC_REVISION
+NEO_REVISION
+OCL_DRIVER_VERSION

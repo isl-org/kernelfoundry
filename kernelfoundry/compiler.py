@@ -1,6 +1,6 @@
 """Kernel compilation helpers for building PyTorch extensions.
 
-See :func:`kernelfoundry.custom_test.CustomTask.compile_torch_extension`
+See :func:`kernelfoundry.custom_test.Task.compile_torch_extension`
 for a high-level interface.
 """
 

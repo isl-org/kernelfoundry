@@ -1,0 +1,53 @@
+Pretend you are supervising a student who is supposed to write a GPU kernel for a pytorch function. 
+This is the kernel that the student generated:
+```
+{{ generated_kernel }}
+```
+{# --------- Console log in case of error -------- #}
+{% if status=="error" %}
+The console output from running the kernel is:
+```
+{{ console_output }}
+```
+Please pretend you are a senior engineer who is mentoring the student, and provide feedback to the student about the code. 
+Briefly summarize the console output, interpret it, and provide high-level suggestions for improvements. 
+{% if use_keyword_prompt %} 
+Optionally, suggest specific keywords or terms to search for in the SYCL documentation that might help resolve the issue (in <kw></kw> tags).
+{% endif %}
+{# --------- Prompt in case of correct kernel -------- #}
+{% elif status=="correct" %}
+The kernel compiles and gives the correct output on test cases. However, it should be further optimized. 
+Could you identify the bottlenecks in the kernel and suggest improvements to optimize the runtime? 
+
+Please pretend you are a senior engineer who is mentoring the student. Point out two or three key bottlenecks 
+in the kernel, quote the corresponding lines of code, and explain to the student how to improve them.
+{% if use_keyword_prompt %} 
+Optionally, suggest specific keywords or terms to search for in the SYCL documentation that might help to optimize the kernel (in <kw></kw> tags). 
+{% endif %}
+{% endif %}
+{# --------- General instructions -------- #}
+Only make specific suggestions for improvements, do NOT provide generic suggestions like "add tests". 
+The student is only responsible for writing a performant kernel, and cannot change the tests, console logging, or other parts of the code. 
+Please directly address the student and provide feedback, without any introductory sentence!
+
+Follow this format:
+{# --------- Instructions dependent whether error / correct -------- #}
+{% if status=="correct" %}
+(I) General feedback: Your kernel is correct, but could be made more efficient.
+(II) Bottlenecks and suggestions for improvement:
+1. <line of code>: <bottleneck description>
+2. <line of code>: <bottleneck description> 
+3. <line of code>: <bottleneck description>
+{% elif status=="error" %}
+(I) General feedback: Your kernel <is incorrect / does not compile>.
+(II) Summary of console output: <your summary here>
+(III) Errors and suggestions for improvement:
+1. <line of code>: <error description>
+2. <line of code>: <error description> 
+3. <line of code>: <error description>
+{% endif %}
+{% if use_keyword_prompt %}
+(Optional) Keywords for documentation-lookup 
+    <kw>Keyword1</kw>
+    <kw>Keyword2</kw>
+{% endif %}

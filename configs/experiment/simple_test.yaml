@@ -1,0 +1,29 @@
+# @package _global_
+defaults:
+  - override /paths: default
+  - override /prompt: default
+  - override /task_set: default
+
+language: SYCL
+gpu_arch: bmg
+
+task_set:
+  level: 1
+  subset: 
+    - 19
+    - 19
+  use_representative: False
+
+max_iters: 3
+stop_once_correct: True
+
+# eval_config:
+#   use_queue: True
+  
+# # use this to evaluate a working kernel from another run:
+start_from_best: true
+
+store_generated_kernels_in_db: false
+
+devices:
+ - 0

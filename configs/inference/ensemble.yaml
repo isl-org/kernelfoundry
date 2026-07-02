@@ -1,0 +1,15 @@
+_target_: kernelfoundry.algorithm.inference_server.LLMEnsemble
+servers:
+  - _target_: kernelfoundry.algorithm.inference_server.InferenceServer
+    server_type: openai
+    model_name: gpt-4o
+    temperature: 0.3
+    num_completions: 1
+    max_tokens: 6500
+  - _target_: kernelfoundry.algorithm.inference_server.InferenceServer
+    server_type: openai
+    model_name: gpt-5.2
+    temperature: 0.3
+    num_completions: 1
+    max_tokens: 6500
+weights: uniform

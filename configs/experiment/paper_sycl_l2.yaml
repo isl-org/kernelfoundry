@@ -1,0 +1,48 @@
+# @package _global_
+defaults:
+  - override /paths: default
+  - override /inference: ensemble
+  - override /database: evolve_db_optimization_aware
+  - override /prompt: meta_prompting
+  - override /task_set: default
+  
+
+job_name: paper_sycl_wotemplated_l2
+
+# main parameters
+language: SYCL
+gpu_arch: lnl
+branches_per_iteration: 8
+max_iters: 50
+stop_once_correct: False
+
+# Enable QD Gradient Tracking
+use_gradient_tracking: true
+gradient_sampling_weight: 0.3  # Blend 30% gradient-informed sampling with 70% standard
+  
+# Fine-tune gradient computation (optional)
+gradient_config:
+  max_history: 10000          # Transitions to remember
+  max_cell_cache: 256         # Cell statistics cache size
+  fitness_weight: 0.4         # Weight for fitness gradient
+  improvement_rate_weight: 0.4 # Weight for improvement rate
+  exploration_weight: 0.2     # Weight for exploring empty cells
+  checkpoint_interval: 100    # Save gradient data every N transitions
+
+# Optimization-aware prompting configuration
+enable_esimd_exploration: False
+use_optimization_aware_prompting: True
+exploration_strategy: mutate  # Options: mutate, intensify, diversify
+use_exploration_prompts: True
+
+# use representative subset for level 2
+task_set:
+  level: 2
+  use_representative: True
+
+# Disable templated kernels
+prompt:
+  diff_format: False
+  template:
+    allow_templated: False
+

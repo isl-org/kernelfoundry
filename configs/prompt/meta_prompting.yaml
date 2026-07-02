@@ -1,0 +1,51 @@
+# Meta-prompting configuration for Science-CodeEvolve style prompt evolution
+# 
+# This enables holistic prompt evolution where prompts evolve as complete programs.
+#
+# Usage:
+#   python run.py +prompt=meta_prompting
+#
+# Or override in experiment config:
+#   defaults:
+#     - prompt: meta_prompting
+
+# Inherit from default prompt config
+defaults:
+  - default
+
+# template manager specifics
+num_optimization_tips: 2
+include_inspirations: True
+include_best_program: True
+include_hardware_specs: True
+allow_templated: False 
+
+# Enable meta-prompting (CodeEvolve style holistic evolution)
+meta_prompting:
+  # Master switch for meta-prompting
+  enabled: true
+  
+  # Evolution mode
+  mode: holistic
+  
+  # How often to trigger meta-prompting evolution (every N samples)
+  evolution_interval: 2
+  
+  # Number of prompts to evolve per evolution cycle
+  evolution_batch_size: 2
+  
+  # Minimum samples before a prompt is eligible for evolution
+  min_samples_for_evolution: 5
+  
+  # Exploration rate for prompt selection (probability of random selection)
+  exploration_rate: 0.2
+  
+  # Softmax temperature for fitness-based selection (lower = more exploitation)
+  selection_temperature: 1.0
+  
+  # Maximum number of prompts to keep in database
+  max_prompts: 50
+  
+  # Output directory for prompt evolution database (relative to logdir)
+  output_subdir: "prompt_evolution"
+  

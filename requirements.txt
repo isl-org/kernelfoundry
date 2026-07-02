@@ -1,0 +1,43 @@
+autoroot
+modal
+openai
+boto3
+packaging
+hydra-core
+pydra_config
+tqdm
+datasets
+transformers
+pytest
+ninja
+archon-ai
+einops
+scipy
+flask
+flask-cors
+clang==20.1.5
+pytest-dependency
+pybind11
+openvino # for baseline times (torch.compile)
+pyopencl
+# db viewer
+nicegui<=3.6.0
+networkx
+pygraphviz
+authlib
+# GTA
+paramiko
+# unitrace profiling
+ittapi
+# preprocessing
+beautifulsoup4
+# message queue
+fastapi
+uvicorn
+celery[msgpack]
+python-multipart
+requests
+# database
+sqlalchemy
+psycopg2-binary
+cmake
