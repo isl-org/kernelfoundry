@@ -1,10 +1,13 @@
 # KernelFoundry MCP Server
 
-A [FastMCP](https://github.com/jlowin/fastmcp) server that exposes a single
-tool, `build_and_test`, to zip a local folder and submit it to the
-KernelFoundry `/api/validate_job` endpoint.
+A [FastMCP](https://github.com/jlowin/fastmcp) server that exposes a single tool,
+`build_and_test`, which builds and benchmarks a kernel package — either locally or by
+submitting it to the KernelFoundry `/api/validate_job` endpoint.
 
-## Install the server 
+This is the reference for setting the server up. For the workflow an agent should follow once
+it is running, see [`AGENTS.md`](../../AGENTS.md) in the repository root.
+
+## Install the server
 
 1. (Skip if kernelfoundry is already installed) Create a virtual environment and install the kernelfoundry python package with mcp option (see [main readme](../../README.md#install-kernelfoundry-python-package)):
    * Install directly with pip from your package source or repository:
@@ -34,22 +37,22 @@ KernelFoundry `/api/validate_job` endpoint.
         ```bash
         python -m pip install fastmcp httpx pyyaml
         ```
-3. Test if the mcp server starts
+2. Test if the mcp server starts
    ```bash
    python -m kernelfoundry.mcp_server
    ```
    Stop the process, Ctrl-c
-4. Remember the location of your virtual env python binary
+3. Remember the location of your virtual env python binary
    ```bash
    python -c "import sys; print(sys.executable)"
    ```
 
 ## Add server to VSCode
 1. Ctrl-Shift-P or Cmd-Shift-P. Select `MCP: Add Server`
-3. Command (stdio)
-5. Command to run : `path/to/your/python -m kernelfoundry.mcp_server`
-6. Enter server id: `kernelfoundry-mcp` or some name you like
-7. Global, remote, or workspace depends on your project or workspace
+2. Choose `Command (stdio)`
+3. Command to run: `path/to/your/python -m kernelfoundry.mcp_server`
+4. Enter server id: `kernelfoundry-mcp` or some name you like
+5. Global, remote, or workspace depends on your project or workspace
 
 The mcp.json should now open in your VSCode window. Now, there are two execution modes:
 1) **Server**: If KernelFoundry runs on a server with celery and rabbitmq, the MCP server will just zip the task files and send them to the server, where it will be benchmarked on the GPU workers. To use this mode, you need to add the following to the mcp.json dictionary:
@@ -65,10 +68,21 @@ The mcp.json should now open in your VSCode window. Now, there are two execution
 
 The tool will run **locally** unless a server configuration is provided. For local execution, make sure you have all requirements installed (see [instructions](../../README.md#installation)).
 
-#### Test the MCP server:
-If everything worked correctly, you should be able to start the MCP server in VSCode. To test it, open a chat window to your agent (e.g. Copilot / Claude Caude) and try the following prompt:
->You should see the build_and_test tool from kernelfoundry-mcp. Can you use that tool on the folder `tasks/example_custom/`?
-If successful, the tool should return a json from which the agent can gather info on test outcome, runtime stats and profiler data. Then, the agent can iteratively refine the kernel code and use the `build_and_test` tool to benchmark the new version. The results will also be stored in the database, but note that in case of local execution, the database is stored in your home directory since VSCode executes the MCP server from there. 
+### Test the MCP server
+
+If everything worked correctly, you should be able to start the MCP server in VSCode. To test
+it, open a chat window to your agent (e.g. Copilot or Claude Code) — you should see the
+`build_and_test` tool from `kernelfoundry-mcp` — and try this prompt:
+
+> Can you use the `build_and_test` tool on the folder `tasks/example_custom/`?
+
+The tool returns JSON from which the agent can read the test outcome, runtime stats and
+profiler data. The agent can then refine the kernel code and call `build_and_test` again to
+benchmark the new version, repeating until it stops improving.
+
+Results are also stored in the database. Note that in local execution mode the database is
+written relative to your home directory, because that is where VSCode launches the MCP server
+from.
 
 ## Use server with other clients
 To use the MCP server with other tools create the more standardized `.mcp.json` which looks slightly different than the VSCode `mcp.json` created by VSCode.
@@ -91,7 +105,7 @@ To use the MCP server with other tools create the more standardized `.mcp.json` 
     }
 }
 ```
-Note that you can generate this file interactiveley by running 
+Note that you can generate this file interactively by running
 ```bash
 python -m kernelfoundry.mcp_server create_config
 ```
@@ -123,5 +137,16 @@ python -m kernelfoundry.mcp_server
 
 ### `build_and_test(folder_path: str)`
 
-Zips the contents of `folder_path` and sends the archive to the KernelFoundry server.
-The tool returns the job status and the evaluation log with build errors or test results.
+Builds and benchmarks the kernel package in `folder_path`. If a server URL is configured, the
+folder is zipped and submitted to the KernelFoundry server; otherwise it is evaluated locally.
+
+Returns a dictionary with:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `success` | bool | Whether the job completed successfully |
+| `job_id` | int | ID of the submitted job — use it to find the run in the web UI |
+| `eval_log` | str | Evaluation log, including build errors and test results |
+| `runtime_stats` | dict | Runtime statistics from kernel execution |
+| `speedup` | float \| str | Runtime improvement, or `"N/A"` if unavailable |
+| `error` | str | Error message, present only if the job failed |

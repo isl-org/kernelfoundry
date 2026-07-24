@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 444" width="860" height="444" role="img" aria-label="KernelFoundry architecture: a coding agent via MCP or the command line submits a kernel package into an optimization loop that generates, compiles, benchmarks and profiles candidate kernels on a real GPU, keeping the fastest passing variants, and emits an optimized kernel plus a results database.">
+  <defs>
+    <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0.5 L 7.5 4 L 0 7.5 z" fill="#6e7781"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="860" height="444" fill="#ffffff"/>
+
+  <g font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+
+    <!-- ── entry points ───────────────────────────────────────────── -->
+    <rect x="60" y="14" width="340" height="46" rx="6" fill="#fbf0ff" stroke="#c297ff"/>
+    <text x="230" y="34" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">Coding agent</text>
+    <text x="230" y="50" text-anchor="middle" font-size="11" fill="#57606a">MCP tool: build_and_test</text>
+
+    <rect x="460" y="14" width="340" height="46" rx="6" fill="#fbf0ff" stroke="#c297ff"/>
+    <text x="630" y="34" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">Command line</text>
+    <text x="630" y="50" text-anchor="middle" font-size="11" fill="#57606a">python -m kernelfoundry.algorithm run</text>
+
+    <path d="M 230 60 V 80 H 430" fill="none" stroke="#6e7781" stroke-width="1.4"/>
+    <path d="M 630 60 V 80 H 430" fill="none" stroke="#6e7781" stroke-width="1.4"/>
+    <path d="M 430 80 V 100" fill="none" stroke="#6e7781" stroke-width="1.4" marker-end="url(#arrow)"/>
+
+    <!-- ── kernel package ─────────────────────────────────────────── -->
+    <rect x="230" y="100" width="400" height="58" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+    <text x="430" y="124" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">Kernel package</text>
+    <text x="430" y="142" text-anchor="middle" font-size="11" fill="#57606a">reference · tests · EVOLVE block · config.yaml</text>
+
+    <path d="M 430 158 V 190" fill="none" stroke="#6e7781" stroke-width="1.4" marker-end="url(#arrow)"/>
+
+    <!-- ── optimization loop ──────────────────────────────────────── -->
+    <rect x="40" y="190" width="780" height="146" rx="10" fill="#f0f8ff" stroke="#54aeff"/>
+    <text x="56" y="211" font-size="11" font-weight="600" fill="#57606a" letter-spacing="0.4">OPTIMIZATION LOOP</text>
+
+    <rect x="60" y="222" width="130" height="54" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+    <text x="125" y="246" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">Generate</text>
+    <text x="125" y="263" text-anchor="middle" font-size="11" fill="#57606a">LLM</text>
+
+    <rect x="207.5" y="222" width="130" height="54" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+    <text x="272.5" y="246" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">Compile</text>
+    <text x="272.5" y="263" text-anchor="middle" font-size="11" fill="#57606a">SYCL · OpenCL · CUDA</text>
+
+    <rect x="355" y="222" width="130" height="54" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+    <text x="420" y="246" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">Benchmark</text>
+    <text x="420" y="263" text-anchor="middle" font-size="11" fill="#57606a">real GPU</text>
+
+    <rect x="502.5" y="222" width="130" height="54" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+    <text x="567.5" y="246" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">Profile</text>
+    <text x="567.5" y="263" text-anchor="middle" font-size="11" fill="#57606a">unitrace · VTune</text>
+
+    <rect x="650" y="222" width="130" height="54" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+    <text x="715" y="246" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">Select</text>
+    <text x="715" y="263" text-anchor="middle" font-size="11" fill="#57606a">keep fastest passing</text>
+
+    <path d="M 190 249 H 207.5" fill="none" stroke="#6e7781" stroke-width="1.4" marker-end="url(#arrow)"/>
+    <path d="M 337.5 249 H 355" fill="none" stroke="#6e7781" stroke-width="1.4" marker-end="url(#arrow)"/>
+    <path d="M 485 249 H 502.5" fill="none" stroke="#6e7781" stroke-width="1.4" marker-end="url(#arrow)"/>
+    <path d="M 632.5 249 H 650" fill="none" stroke="#6e7781" stroke-width="1.4" marker-end="url(#arrow)"/>
+
+    <path d="M 715 276 V 304 H 125 V 276" fill="none" stroke="#6e7781" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+    <text x="420" y="322" text-anchor="middle" font-size="11" fill="#57606a">test results · runtime stats · profiler feedback</text>
+
+    <!-- ── outputs ────────────────────────────────────────────────── -->
+    <path d="M 430 336 V 354" fill="none" stroke="#6e7781" stroke-width="1.4"/>
+    <path d="M 275 354 H 585" fill="none" stroke="#6e7781" stroke-width="1.4"/>
+    <path d="M 275 354 V 374" fill="none" stroke="#6e7781" stroke-width="1.4" marker-end="url(#arrow)"/>
+    <path d="M 585 354 V 374" fill="none" stroke="#6e7781" stroke-width="1.4" marker-end="url(#arrow)"/>
+
+    <rect x="150" y="374" width="250" height="54" rx="6" fill="#dafbe1" stroke="#4ac26b"/>
+    <text x="275" y="398" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">Optimized kernel</text>
+    <text x="275" y="415" text-anchor="middle" font-size="11" fill="#57606a">integrate back into your code</text>
+
+    <rect x="460" y="374" width="250" height="54" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+    <text x="585" y="398" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">Results database</text>
+    <text x="585" y="415" text-anchor="middle" font-size="11" fill="#57606a">inspect in the web UI</text>
+
+  </g>
+</svg>
