@@ -16,10 +16,13 @@ and iterates on real profiler feedback, or from the **command line**, which runs
 evolutionary search (MAP-Elites quality-diversity with meta-prompt evolution) over the design
 space. Both target SYCL, OpenCL and CUDA.
 
+<!-- Diagram paths are relative so they resolve against whatever ref is being viewed
+     (branch, PR, fork, local preview). Absolute raw/main URLs would 404 until merge. -->
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/isl-org/kernelfoundry/raw/main/assets/architecture-dark.svg">
-    <img src="https://github.com/isl-org/kernelfoundry/raw/main/assets/architecture-light.svg" alt="A coding agent (via the MCP build_and_test tool) or the command line submits a kernel package into an optimization loop: generate with an LLM, compile, benchmark on a real GPU, profile, and select the fastest passing variants, feeding test results and profiler data back into generation. The loop emits an optimized kernel and a results database." width="860">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/architecture-light.svg">
+    <img src="assets/architecture-light.svg" alt="A coding agent (via the MCP build_and_test tool) or the command line submits a kernel package into an optimization loop: generate with an LLM, compile, benchmark on a real GPU, profile, and select the fastest passing variants, feeding test results and profiler data back into generation. The loop emits an optimized kernel and a results database." width="860">
   </picture>
 </p>
 
