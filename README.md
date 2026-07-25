@@ -6,10 +6,16 @@
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://pypi.org/project/kernelfoundry/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](https://github.com/isl-org/kernelfoundry/blob/main/LICENSE)
 
-**Write a faster GPU kernel without hand-tuning it.** You supply a reference implementation
-and tests that define correctness and speed; KernelFoundry repeatedly generates, compiles,
-benchmarks and profiles candidate kernels on real hardware, and keeps the fastest ones that
-still pass your tests.
+**Write a faster GPU kernel without hand-tuning it.** KernelFoundry optimizes against a reference
+implementation and tests that define correctness and speed, repeatedly generating, compiling,
+benchmarking and profiling candidate kernels on real hardware, and keeping the fastest ones that
+still pass those tests.
+
+You don't have to write that reference and those tests yourself. Point a coding agent at the kernel
+you want faster and it builds the reference, finds your existing tests or writes new ones, and picks
+benchmark shapes from your call sites, asking you only about what it can't infer. See
+[`AGENTS.md`](https://github.com/isl-org/kernelfoundry/blob/main/AGENTS.md) for the workflow it
+follows.
 
 You can drive it two ways: from a **coding agent** in your editor, which packages the kernel
 and iterates on real profiler feedback, or from the **command line**, which runs an
