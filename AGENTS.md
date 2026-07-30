@@ -70,16 +70,20 @@ user fill in.
 5. **Multi-variant strategy.** Consider a small portfolio of variants (2–4) with runtime
    dispatch selecting per input pattern. Report the complexity cost against the gain — do not
    add dispatch that does not pay for itself.
-6. **Config and pass gate.** Set `max_iters`, `branches_per_iteration` and `evolve_mode`
-   appropriately. Do **not** report success unless `build_and_test` passes end to end:
-   `success=true`, with valid runtime stats and a real speedup — never `N/A` or empty.
+6. **Config and pass gate.** Set `max_iters` and `branches_per_iteration` appropriately. Do
+   **not** invent config keys: a task `config.yaml` may only set keys that exist in
+   `configs/run.yaml`, and anything else fails the run with
+   `ConfigKeyError: Key '<name>' is not in struct`. In particular there is no `evolve_mode`
+   key — evolutionary search turns on by itself when `branches_per_iteration > 1`. Do **not**
+   report success unless `build_and_test` passes end to end: `success=true`, with valid
+   runtime stats and a real speedup — never `N/A` or empty.
 
 ## Workflow
 
 - **A · Setup.** Create the one task directory. Import the kernel plus any compatibility
   scaffolding it needs to stand alone. Freeze the reference and validate its baseline
-  correctness. Write `config.yaml` with explicit `max_iters`, `branches_per_iteration`,
-  `evolve_mode` and `gpu_arch`.
+  correctness. Write `config.yaml` with explicit `max_iters`, `branches_per_iteration` and
+  `gpu_arch`.
 - **B · Evidence.** Locate and summarize the relevant existing tests, benchmarks and call
   sites. Build the benchmark set with an explicit `origin` and `rationale` per shape.
 - **C · Optimize.** Edit **only** the `EVOLVE` region; the reference stays frozen. Keep macro
