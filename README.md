@@ -1,6 +1,10 @@
 # KernelFoundry
 <img src="https://github.com/isl-org/kernelfoundry/raw/main/assets/kernelfoundry.png" alt="KernelFoundry Logo" width="200" align="right">
 
+
+[![Website](https://img.shields.io/badge/Website-KernelFoundry-0A7E8C?style=flat-square)](https://isl-org.github.io/kernelfoundry/)
+[![Paper](https://img.shields.io/badge/Paper-arXiv%3A2603.12440-B31B1B?style=flat-square)](https://arxiv.org/abs/2603.12440)
+[![Docs](https://img.shields.io/badge/Docs-Documentation-1F6FEB?style=flat-square)](https://isl-org.github.io/kernelfoundry/docs/index.html)
 [![Lint](https://github.com/isl-org/kernelfoundry/actions/workflows/black.yml/badge.svg)](https://github.com/isl-org/kernelfoundry/actions/workflows/black.yml)
 [![PyPI](https://img.shields.io/pypi/v/kernelfoundry)](https://pypi.org/project/kernelfoundry/)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://pypi.org/project/kernelfoundry/)
