@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.4.0 (2026-09-04)
+
+### Features
+
+- Update docs, release agentic workflow, extend mcp
+  ([#13](https://github.com/isl-org/kernelfoundry/pull/13),
+  [`365e1fb`](https://github.com/isl-org/kernelfoundry/commit/365e1fbed68a0a7595e98699cd105c1e97a05b25))
+
+
 ## v0.3.0 (2026-07-02)
 
 ### Features
