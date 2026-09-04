@@ -446,6 +446,7 @@ class AgenticController(PromptEvolutionMixin):
     ) -> tuple[str, Optional[Program]]:
         """
         Construct a fresh prompt for a single branch and report the sampled parent.
+
         Args:
             problem_name: Operation name
             ref_arch_src: Reference source code
@@ -453,10 +454,10 @@ class AgenticController(PromptEvolutionMixin):
             task: Custom task object that can provide the initial implementation
 
         Returns:
-            prompt: Prompt that was used for generation.
-            parent: Parent program sampled from the database (``None`` if no
-                parent was available). Its ``id`` identifies the agent to fork
-                in order to continue the search from this parent.
+            A ``(prompt, parent)`` pair: the prompt used for generation, and the parent
+            program sampled from the database (``None`` if no parent was available). The
+            parent's ``id`` identifies the agent to fork in order to continue the search
+            from it.
         """
         iteration_start = time.time()
 

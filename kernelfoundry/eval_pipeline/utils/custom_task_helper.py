@@ -309,7 +309,8 @@ def blocks_to_str(blocks: dict[str, list[str]]) -> str:
     """Converts a blocks dict (file_path -> list[content]) to a single string.
 
     For a single block total, returns the content directly. For multiple blocks,
-    combines them with ### Block: file_path ### separator lines. Split back with:
+    combines them with ### Block: file_path ### separator lines. Split back with::
+
         re.split(r'^### Block: (.+?) ###$', text, flags=re.MULTILINE)
 
     Args:

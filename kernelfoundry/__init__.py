@@ -4,7 +4,7 @@ from pathlib import Path
 
 from .test_base import TestBase
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 #: The installed (or checked-out) ``kernelfoundry`` package directory.
 PACKAGE_ROOT = Path(__file__).resolve().parent
