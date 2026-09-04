@@ -32,10 +32,20 @@ extensions = [
     "sphinx.ext.viewcode",
     "sphinx.ext.intersphinx",
     "sphinx_copybutton",
+    "myst_parser",  # the user guide under guide/ is authored in markdown
 ]
+
+# Markdown extras used by the user guide. colon_fence allows ::: directives inside
+# markdown; deflist is used for the concept definitions.
+myst_enable_extensions = ["colon_fence", "deflist"]
 
 # Turn on sphinx.ext.autosummary
 autosummary_generate = True
+autosummary_ignore_prefixes = ["kernelfoundry."]
+
+# Shorten the "On this page" TOC entries so members show as e.g. "compiled()"
+# instead of "EvalResult.compiled()".
+toc_object_entries_show_parents = "hide"
 
 # Mock celery as it transforms decorated functions into Task objects, hiding signatures from autodoc
 autodoc_mock_imports = ["celery"]
@@ -61,13 +71,16 @@ templates_path = ["_templates"]
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+# README.md is a build note for maintainers, not a docs page. It must be excluded now that
+# myst_parser treats .md files under docs/ as sources, or Sphinx warns that it is orphaned.
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "README.md"]
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
 html_theme = "shibuya"
 html_static_path = ["_static"]
+html_favicon = "_static/favicon.png"
 html_theme_options = {
     "globaltoc_expand_depth": 2,
     "show_ai_links": False,

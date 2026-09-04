@@ -3,6 +3,7 @@
 from typing import Coroutine
 import asyncio
 import tempfile
+import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
 from kernelfoundry.eval_pipeline.utils.subprocess import robust_subprocess_run
@@ -19,6 +20,11 @@ class Image:
         self._runtime = runtime
         self.image_id = image_id
         self.tag = tag
+
+    @property
+    def runtime(self) -> "ContainerRuntime":
+        """The container runtime this image is bound to."""
+        return self._runtime
 
     @staticmethod
     def default_run_args(
@@ -173,15 +179,22 @@ class ContainerRuntime(ABC):
             cmd = [
                 self._cmd,
                 "build",
+                "--provenance=false",
+                "--sbom=false",
+                "--load",
                 "-f",
                 str(dockerfile_path),
                 "--iidfile",
                 iidfile.name,
             ]
-            if image_name is not None:
-                if qualify_name:
-                    image_name = self._qualify(image_name)
-                cmd += ["-t", image_name]
+            # if no image name is provided, we will use a temporary name based on the iidfile
+            temp_named = image_name is None
+            if temp_named:
+                image_name = f"kernelfoundry_task_image/{Path(iidfile.name).stem}"
+
+            if qualify_name:
+                image_name = self._qualify(image_name)
+            cmd += ["-t", image_name]
             cmd += ["."]
             # build the image
             result, result_msg = asyncio.run(
@@ -195,17 +208,17 @@ class ContainerRuntime(ABC):
             if result.returncode == 0:
                 full_id = Path(iidfile.name).read_text().strip()
                 image_id = full_id.split(":")[-1]
-                if image_name is None:
-                    image_name = f"kernelfoundry_task_image/{image_id}"
+                if temp_named:
+                    # retag from the temp iidfile-based name to the image-id-based name
+                    new_image_name = f"kernelfoundry_task_image/{image_id}"
                     if qualify_name:
-                        image_name = self._qualify(image_name)
+                        new_image_name = self._qualify(new_image_name)
 
-                    # tag the image
                     cmd = [
                         self._cmd,
                         "tag",
-                        image_id,
                         image_name,
+                        new_image_name,
                     ]
                     tag_result, tag_result_msg = asyncio.run(
                         robust_subprocess_run(
@@ -217,6 +230,17 @@ class ContainerRuntime(ABC):
                     )
                     if tag_result.returncode != 0:
                         return None, tag_result, tag_result_msg
+
+                    # remove the temp tag now that the image-id-based tag exists
+                    asyncio.run(
+                        robust_subprocess_run(
+                            [self._cmd, "rmi", image_name],
+                            timeout=timeout,
+                            output_inactivity_timeout=timeout,
+                            cwd=str(environment_path),
+                        )
+                    )
+                    image_name = new_image_name
 
                 image = Image(self, image_id, tag=image_name)
                 return image, result, None
@@ -283,7 +307,7 @@ class ContainerRuntime(ABC):
             docker_build_env_dir = docker_images_root / f"kernelfoundry_{lang}-{gpu}"
             if docker_build_env_dir.is_dir():
                 image, build_result, build_result_msg = self.build_image(
-                    environment_path=docker_build_env_dir, image_name=image_name, timeout=timeout, push_after_build=True
+                    environment_path=docker_build_env_dir, image_name=image_name, timeout=timeout
                 )
                 return image, build_result, build_result_msg
         raise RuntimeError(f"No default image found for language={language} gpu_arch={gpu_arch}")
@@ -452,3 +476,27 @@ def get_container_runtime() -> type[ContainerRuntime]:
             return cls
 
     raise RuntimeError("No container runtime found: neither 'docker' nor 'podman' is available on PATH.")
+
+
+def select_container_image(container_image_dict: dict, language: str, gpu_arch: str) -> str:
+    """Returns the container image for the given language and GPU architecture.
+
+    Args:
+        container_image_dict (dict): Dictionary mapping languages to GPU architectures to container images.
+        language (str): The programming language.
+        gpu_arch (str): The GPU architecture.
+
+    Returns:
+        str: The container image.
+    """
+    tmp_lang = language
+    if language not in container_image_dict and len(container_image_dict) > 0:
+        logging.warning(
+            f"Container image differs from language, probably reference language != kernel language, using first image"
+        )
+        tmp_lang = list(container_image_dict.keys())[0]
+
+    container_image = container_image_dict.get(tmp_lang, {}).get(gpu_arch) or container_image_dict.get(
+        tmp_lang, {}
+    ).get("all")
+    return container_image

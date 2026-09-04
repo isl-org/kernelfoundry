@@ -5,14 +5,17 @@ from typing import Optional
 import networkx as nx
 import math
 
+
 from kernelfoundry.gui.utils import (
     get_kernels_by_job_id,
     get_kernels_by_op_and_run,
     get_op_names,
     get_jobs_by_op,
     get_id_by_uuid,
+    get_job_by_id,
 )
 from kernelfoundry.gui.kernel_detail import kernel_detail_page
+from kernelfoundry.gui.job_report_page import render_kernel_report
 
 
 def size_from_runtime(rt, min_rt, max_rt, node_count):
@@ -328,14 +331,21 @@ def kernel_graph_page(
 
                 ui.button("Plot", on_click=on_plot).classes("mt-2")
 
+                def on_view_report():
+                    render_kernel_report(detail_container, kernels, rel_margin=0.025, job=job)
+
             if selected_job_id is not None:
                 ui.label(f"Showing results for Job ID: {selected_job_id}").classes("text-sm text-gray-600 mb-2")
+
+            ui.button("View report", on_click=on_view_report).classes("mt-2")
 
             # Graph container
             if selected_job_id is not None:
                 kernels = get_kernels_by_job_id(selected_job_id)
+                job = get_job_by_id(selected_job_id)
             else:
                 kernels = get_kernels_by_op_and_run(op_name_input.value, run_input.value, user_id)
+                job = None
             nodes, links = build_graph_with_layout(kernels)
             if len(nodes) == 0 and len(links) == 0:
                 # uuid is probably missing, fallback to id-based graph
@@ -343,9 +353,10 @@ def kernel_graph_page(
 
             ui.html('<div id="kernel-graph" style="width: 480px; height: 600px;"></div>', sanitize=False)
 
-        # Right side: Kernel Detail (takes remaining space)
+        # Right side: Kernel Detail (takes remaining space). Shows the job report by
+        # default; "View report" switches back to it after viewing a kernel's detail.
         detail_container = ui.column().classes("flex-1 min-w-0")
-        detail_container.style("display: none;")
+        render_kernel_report(detail_container, kernels, rel_margin=0.025, job=job)
 
     # Note: due to bugs with nicegui ui.echarts click event handling, we will inject raw javascript
     def graph_javascript_code(nodes, links):

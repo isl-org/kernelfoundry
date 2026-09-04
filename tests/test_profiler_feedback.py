@@ -1,8 +1,9 @@
 """Tests for profiler feedback collation."""
 
+import logging
 from collections import OrderedDict
 
-from kernelfoundry.eval_pipeline.profiler_feedback import UnitraceProfilerFeedback
+from kernelfoundry.eval_pipeline.profiler_feedback import NCUProfilerFeedback, UnitraceProfilerFeedback
 
 
 def _make_timeline() -> dict:
@@ -169,3 +170,23 @@ def test_unitrace_create_feedback_limits_to_slowest_and_median_when_more_than_th
     assert "# Benchmark 2: pytest test task.py::Test::test_benchmark[large]" in feedback
     assert "task.py::Test::test_benchmark[tiny]" not in feedback
     assert "task.py::Test::test_benchmark[medium]" not in feedback
+
+
+def test_ncu_collation_of_nothing_is_an_empty_dict():
+    """Test collation of NCU profiler data when no data is present. The collated result should be an empty dict."""
+    assert NCUProfilerFeedback().collate_data({}) == {}
+    assert NCUProfilerFeedback().collate_data({"unitrace.000": {"timeline": "{}"}}) == {}
+
+
+def test_ncu_collation_returns_the_first_ncu_output():
+    outputs = {"ncu.000": {"ncu_report.csv": '"ID"\n"0"\n'}}
+    assert NCUProfilerFeedback().collate_data(outputs) == {"ncu_report.csv": '"ID"\n"0"\n'}
+
+
+def test_ncu_feedback_for_no_data_is_empty_and_says_so(caplog):
+    """No profile means no feedback"""
+    with caplog.at_level(logging.WARNING):
+        feedback = NCUProfilerFeedback().create_feedback({}, _make_worker_info())
+
+    assert feedback == "No NCU profile data available."
+    assert "no profiler feedback" in caplog.text

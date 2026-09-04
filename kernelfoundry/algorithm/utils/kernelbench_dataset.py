@@ -9,19 +9,24 @@ import shutil
 import tempfile
 import pandas as pd
 from omegaconf import DictConfig
-from pyrootutils import find_root
 
+from kernelfoundry import PACKAGE_ROOT
 import kernelfoundry.eval_pipeline.database as db
 from kernelfoundry.eval_pipeline.task import Task
 from kernelfoundry.algorithm.utils.extract_code import replace_function_calls
 
-KF_ROOT = find_root(search_from=__file__, indicator=".project-root")
-KERNELBENCH_TASK_TEMPLATE = os.path.join(KF_ROOT, "tasks", "kernelbench")
-BACKWARD_TASK_TEMPLATE = os.path.join(KF_ROOT, "tasks", "robust_kbench_backward")
+# The KernelBench task templates and pytorch_functionals.csv are data, not code, and are
+# deliberately not shipped in the wheel. Using task_origin=KernelBench or robust_kbench requires a
+# git checkout. Anchored on PACKAGE_ROOT.
+_TASKS_DIR = os.path.join(PACKAGE_ROOT.parent, "tasks")
+KERNELBENCH_TASK_TEMPLATE = os.path.join(_TASKS_DIR, "kernelbench")
+BACKWARD_TASK_TEMPLATE = os.path.join(_TASKS_DIR, "robust_kbench_backward")
 FN_ENDING_DICT = {"SYCL": "sycl", "triton": "py", "CUDA": "cu"}
 COMMENT_DICT = {"SYCL": "//", "triton": "#", "CUDA": "//"}
 
-PYTORCH_FUNCTIONALS_PATH = os.path.join(KF_ROOT, "tasks", "pytorch_functionals.csv")
+PYTORCH_FUNCTIONALS_PATH = os.path.join(_TASKS_DIR, "pytorch_functionals.csv")
+
+
 PYTORCH_FUNCTIONALS = None
 
 # Tasks that we filtered out because they do not allow proper correctness testing (low output range / std, low sensitivity to input tensors)
@@ -53,6 +58,9 @@ def init_pytorch_functionals():
     """Load functionals csv if not yet in memory"""
     global PYTORCH_FUNCTIONALS
     if PYTORCH_FUNCTIONALS is None:
+        assert os.path.isfile(
+            PYTORCH_FUNCTIONALS_PATH
+        ), "KernelBench and robust_kbench tasks need the tasks/ directory, please clone KF and run from its root rather than pip installing."
         PYTORCH_FUNCTIONALS = pd.read_csv(PYTORCH_FUNCTIONALS_PATH, index_col="task_name")
 
 

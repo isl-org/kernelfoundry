@@ -14,8 +14,20 @@ import logging
 from jinja2 import Environment, PackageLoader, select_autoescape
 
 # GPU architectures that are supported - can be extended
-VALID_CUDA_ARCHS = ["Maxwell", "Pascal", "Volta", "Turing", "Ampere", "Hopper", "Ada", "native"]
-VALID_XPU_ARCHS = ["lnl", "ptl", "bmg", "dg2"]
+VALID_CUDA_ARCHS = [
+    "Maxwell",
+    "Pascal",
+    "Volta",
+    "Turing",
+    "Ampere",
+    "Hopper",
+    "Ada",
+    "native",
+    "A100",
+    "A6000",
+    "L40S",
+    "L4",
+]
 
 PROFILER_ANALYSIS_PROMPT = """
 Your kernel has been analyzed with a profiler. Here is a summary of the results:
@@ -762,8 +774,14 @@ class NCUProfilerFeedback(ProfilerFeedback):
         for k, v in outputs.items():
             if k.startswith("ncu"):
                 return v
+        # Return empty dict if no NCU output is found
+        return {}
 
     def create_feedback(self, data: dict, worker_info: dict) -> str:
+        if not data:
+            # Reached when profiling failed upstream
+            logging.warning("No NCU profile data for this run, so no profiler feedback is included in the next prompt.")
+            return "No NCU profile data available."
         try:
             feedback = self.__call__(data)
         except Exception as e:
@@ -1104,7 +1122,7 @@ class VTuneProfilerFeedback(ProfilerFeedback):
                 bw_parts.append(f"Read: {m['gpu_memory_bw_read_gbps']:.1f} GB/s")
             if m.get("gpu_memory_bw_write_gbps") is not None:
                 bw_parts.append(f"Write: {m['gpu_memory_bw_write_gbps']:.1f} GB/s")
-            parts.append("GPU (DRAM) Memory Bandwidth — " + ", ".join(bw_parts) + ".")
+            parts.append("GPU (DRAM) Memory Bandwidth (VTune-sampled, approximate) — " + ", ".join(bw_parts) + ".")
         if m.get("l3_bw_read_gbps") is not None or m.get("l3_bw_write_gbps") is not None:
             l3_bw = []
             if m.get("l3_bw_read_gbps") is not None:

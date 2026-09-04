@@ -5,6 +5,7 @@ import json
 import re
 import warnings
 from collections import defaultdict
+import warnings
 import numpy as np
 from kernelfoundry.algorithm.schemas import EvalResult
 
@@ -133,7 +134,7 @@ class ProblemLogger:
         """Write eval results to a file"""
         eval_out_path_part = f"eval_result_level_{self.level}_problem_{self.problem_id}_trial_{self.trial}"
         for version, exec_res in enumerate(eval_results):
-            with open(os.path.join(self.logdir, eval_out_path_part + f"_v{version}.json"), "w") as f:
+            with open(os.path.join(self.logdir, eval_out_path_part + f"_v{version}.json"), "w", encoding="utf-8") as f:
                 json.dump(exec_res.to_dict(), f, indent=4)
 
     def save_gen_kernel(self, custom_kernel: str) -> None:
@@ -166,13 +167,18 @@ class ProblemLogger:
 
     def load_kernel_from_other_run(self, run_path: str) -> tuple[str, str]:
         """Find the best generated kernel for this problem in run_path"""
+        warnings.warn(
+            "load_kernel_from_other_run is deprecated and will be removed in future versions. ",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if not os.path.isdir(run_path):
-            with open(run_path, "r") as file:
+            with open(run_path, "r", encoding="utf-8") as file:
                 kernel_code = file.read()
             stdout_path = run_path.replace("generated_kernel", "stdout").split(".")[0] + ".txt"
             eval_log = None
             if os.path.exists(stdout_path):
-                with open(stdout_path, "r") as f:
+                with open(stdout_path, "r", encoding="utf-8", errors="replace") as f:
                     eval_log = f.read()
             # prepare code to return
             wrapped_kernel_code = f"```\n{kernel_code}\n```" if "```" not in kernel_code else kernel_code

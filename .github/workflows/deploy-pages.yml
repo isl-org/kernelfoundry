@@ -1,11 +1,19 @@
 name: Deploy Pages
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
   workflow_call:
+    inputs:
+      ref:
+        description: >-
+          Ref to build the docs from. Defaults to the tip of the default branch,
+          so the version bump semantic-release pushes during a release is picked
+          up. Building the triggering commit instead publishes the previous
+          version number, because that commit predates the bump and the bump
+          commit is marked [skip ci].
+        type: string
+        required: false
+        default: ""
 
 jobs:
   deploy-pages:
@@ -21,6 +29,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.event.repository.default_branch }}
 
       - name: Checkout website repository
         uses: actions/checkout@v4

@@ -5,6 +5,7 @@ to measure performance, switch between reference and kernel code, and use templa
 """
 
 import os
+import sys
 from typing import Callable, Union
 import pytest
 import numpy as np
@@ -67,6 +68,21 @@ def pytest_addoption(parser):
         default=None,
         help="Parameters to plug into the templated kernel",
     )
+    parser.addoption(
+        "--runtime_params",
+        type=str,
+        default=None,
+        help="JSON-encoded runtime parameters from config.yaml hyperparameters.runtime",
+    )
+
+
+def get_runtime_params_from_argv() -> dict:
+    """Parse ``--runtime_params`` from sys.argv into a dict for use in pytest.mark.skipif decorators."""
+
+    for arg in sys.argv:
+        if arg.startswith("--runtime_params="):
+            return json.loads(arg.split("=", 1)[1])
+    return {}
 
 
 @pytest.fixture(scope="session")
@@ -145,6 +161,29 @@ def measure_runtime_torch(request, profile_store) -> Callable:
         output=profile_store[request.node.nodeid],
     )
     return fn
+
+
+@pytest.fixture
+def measure_runtime_benchdnn(request, profile_store) -> Callable:
+    """Create a benchdnn runtime measurement helper with shared output."""
+    from kernelfoundry.eval_pipeline.utils.benchdnn_helper import measure_runtime_benchdnn as _measure_runtime_benchdnn
+
+    profile_store[request.node.nodeid] = []
+    fn = partial(
+        _measure_runtime_benchdnn,
+        output=profile_store[request.node.nodeid],
+    )
+    return fn
+
+
+@pytest.fixture
+def check_correctness_benchdnn() -> Callable:
+    """Create a benchdnn correctness helper."""
+    from kernelfoundry.eval_pipeline.utils.benchdnn_helper import (
+        check_correctness_benchdnn as _check_correctness_benchdnn,
+    )
+
+    return _check_correctness_benchdnn
 
 
 # TODO replace this with the measure_runtime_x functions to not confuse this with the torch profiler

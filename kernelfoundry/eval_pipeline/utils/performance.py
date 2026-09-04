@@ -385,11 +385,19 @@ def measure_runtime_torch(
 
     if torch.xpu.is_available():
         torch_acc = torch.xpu
-        assert not torch.cuda.is_available(), "Mixed xpu and cuda GPU in same machine is not supported!"
+        if torch.cuda.is_available():
+            # only relevant for custom torch build that supports both devices
+            logging.warning(
+                "torch reports both xpu and cuda available; benchmarking on xpu. Use measure_runtime to control which device is used."
+            )
     elif torch.cuda.is_available():
         torch_acc = torch.cuda
     else:
-        raise ValueError("No xpu or cuda device found")
+        # raise error if neither torch.xpu or torch.cuda are found
+        raise ValueError(
+            f"Neither torch.xpu.is_available() nor torch.cuda.is_available() is true in torch {torch.__version__}. "
+            f"Install the appropriate torch build for your device to use measure_runtime_torch."
+        )
 
     result = measure_runtime(
         target=target,

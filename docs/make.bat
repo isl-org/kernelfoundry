@@ -2,6 +2,11 @@
 
 pushd %~dp0
 
+REM Activate virtual environment if not already active
+if "%VIRTUAL_ENV%"=="" (
+    call "%~dp0\..\\.venv\\Scripts\\activate.bat"
+)
+
 REM Command file for Sphinx documentation
 
 if "%SPHINXBUILD%" == "" (

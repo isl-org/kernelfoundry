@@ -1,0 +1,3 @@
+_target_: kernelfoundry.algorithm.agentic_controller.AgenticController
+copilot_exe: copilot
+agent_timeout: 3600.0

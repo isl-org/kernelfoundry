@@ -1,5 +1,6 @@
 """Prompt construction based on RAG databases, templates, and examples."""
 
+import glob
 import os
 
 # from urllib import response
@@ -14,10 +15,10 @@ from kernelfoundry.algorithm.prompts.template_manager import TemplateManager
 from kernelfoundry.algorithm.schemas import Program
 from kernelfoundry.algorithm.inference_server import InferenceServer
 
-# path to examples
-REPO_TOP_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-KERNEL_EXAMPLES = os.path.join(REPO_TOP_PATH, "kernelfoundry", "algorithm", "prompts", "kernel_examples")
-TEMPLATES_PATH = os.path.join(REPO_TOP_PATH, "kernelfoundry", "algorithm", "prompts", "templates")
+# Paths to the example and template files that ship beside this module.
+PROMPTS_PATH = os.path.dirname(os.path.abspath(__file__))
+KERNEL_EXAMPLES = os.path.join(PROMPTS_PATH, "kernel_examples")
+TEMPLATES_PATH = os.path.join(PROMPTS_PATH, "templates")
 
 SYSTEM_PROMPT = "You are an expert CUDA engineer tasked with translating PyTorch code into performant CUDA kernel code."
 
@@ -91,6 +92,7 @@ class PromptConstructor:
         reference_language: str = "Pytorch",
         mode: str = "functional",
         use_feedback_llm: bool = False,
+        mcp_prompt_list: list[str] | None = None,
     ):
         """Initialize prompt construction dependencies and retrieval backends."""
 
@@ -113,18 +115,26 @@ class PromptConstructor:
             "include_top": prompt_config.get("include_best_program", True),
             "use_hardware_prompt": prompt_config.get("include_hardware_specs", True),
             "allow_templated": prompt_config.get("allow_templated", False),
+            "mcp_prompt_list": mcp_prompt_list or [],
+            "prompt_template_fn": prompt_config.get("prompt_template_fn", None),
         }
 
-        # load template example
+        # Load the templated-kernel example for this language, if available
         lang_lower = language.lower()
-        fn_end = "cu" if lang_lower == "cuda" else "sycl"
-        template_example_path = os.path.join(KERNEL_EXAMPLES, f"templated_{mode}_{lang_lower}.{fn_end}")
-        if os.path.exists(template_example_path):
-            with open(template_example_path, "r") as inf:
+        matches = sorted(glob.glob(os.path.join(KERNEL_EXAMPLES, f"templated_{mode}_{lang_lower}.*")))
+        if matches:
+            with open(matches[0], "r", encoding="utf-8") as inf:
                 self.template_example = inf.read()
         else:
-            assert not template_kwargs.get("allow_templated", True), "Must provide example if allow_templated=True"
             self.template_example = None
+            if template_kwargs.get("allow_templated", False):
+                # Warn if allow_templated=true but no templated-kernel-example was found for this language
+                warnings.warn(
+                    f"allow_templated=true, but no templated example ships for language "
+                    f"'{language}' (mode '{mode}'). Continuing without templating.",
+                    stacklevel=2,
+                )
+                template_kwargs["allow_templated"] = False
 
         self.template_manager = TemplateManager(template_example=self.template_example, **template_kwargs)
 
@@ -226,9 +236,10 @@ class PromptConstructor:
         rag_input_list = []
 
         if is_first_iter and self.reference_language == "Pytorch":
-            # Use single example (vector addition)
+            # show single example (vector addition) in prompt if available for the language
             simple_init_example = self.load_vector_add_example()
-            rag_input_list.append(simple_init_example)
+            if simple_init_example is not None:
+                rag_input_list.append(simple_init_example)
 
         # iterate through rag databases
         for rag_db in self.rag_databases:
@@ -242,26 +253,27 @@ class PromptConstructor:
         return "\n\n".join(rag_input_list)
 
     def load_vector_add_example(self):
-        """Load the canonical vector-add translation example for the active language."""
+        """Load the canonical vector-add translation example for the active language.
+        Returns ``None`` when the language ships no example.
+        """
         functional_form = self.mode == "functional"
         # path to prompt template, show an example of Model (torch specifications) and ModelNew (torch + custom CUDA kernels)
         in_path_dict = {True: "pytorch_functional_ex_add.py", False: "model_ex_add.py"}
-        out_path_dict_cuda = {True: "cuda_example_add_raw.cu", False: "model_new_ex_add.py"}
-        out_path_dict_sycl = {True: "sycl_example_add_raw.sycl", False: "model_new_ex_add_sycl.py"}
-        out_path_dict_triton = {True: "triton_functional.py", False: "triton_class.py"}
+        out_path_by_language = {
+            "CUDA": {True: "cuda_example_add_raw.cu", False: "model_new_ex_add.py"},
+            "SYCL": {True: "sycl_example_add_raw.sycl", False: "model_new_ex_add_sycl.py"},
+            "triton": {True: "triton_functional.py", False: "triton_class.py"},
+        }
 
         in_example = os.path.join(KERNEL_EXAMPLES, in_path_dict[functional_form])
-        if self.language == "CUDA":
-            out_example = os.path.join(KERNEL_EXAMPLES, out_path_dict_cuda[functional_form])
-        elif self.language == "SYCL":
-            out_example = os.path.join(KERNEL_EXAMPLES, out_path_dict_sycl[functional_form])
-        elif self.language == "triton":
-            out_example = os.path.join(KERNEL_EXAMPLES, out_path_dict_triton[functional_form])
-        else:
-            raise NotImplementedError("No other language than CUDA, SYCL, triton are supported")
+        if self.language not in out_path_by_language:
+            return None
+        out_example = os.path.join(KERNEL_EXAMPLES, out_path_by_language[self.language][functional_form])
 
-        example_arch_path = os.path.join(REPO_TOP_PATH, in_example)
-        example_new_arch_path = os.path.join(REPO_TOP_PATH, out_example)
+        # in_example and out_example are already absolute; joining a root onto them again was part
+        # of the same path confusion.
+        example_arch_path = in_example
+        example_new_arch_path = out_example
 
         if not os.path.exists(example_arch_path):
             raise FileNotFoundError(f"Example architecture file not found: {example_arch_path}")
@@ -292,8 +304,8 @@ class PromptConstructor:
         code: str,
         input_type: str = "PyTorch code",
         allowed_keywords: list[str] | None = None,
-        server_type: str = "intel_gnai",
-        model_name: str = "claude-4-5-sonnet",
+        server_type: str = "openai",
+        model_name: str = "default",
     ) -> list[str]:
         """Categorize code using LLM to extract relevant topic keywords.
 
@@ -301,7 +313,7 @@ class PromptConstructor:
             code: Source code to categorize.
             input_type: Type of input code (e.g., "PyTorch code", "CUDA kernel").
             allowed_keywords: List of keywords to use for categorization.
-            server_type: Inference server type (e.g., "intel_gnai").
+            server_type: Inference server type (e.g., "openai").
             model_name: Model to use for categorization.
 
         Returns:

@@ -78,7 +78,6 @@ class Evaluator:
             output_string += "------ Standard Error ------\n"
             output_string += result.stderr + "\n"
 
-        print(output_string)  # also print to console for easier debugging
         log_extra = {
             "data": {
                 "log": output_string,
@@ -92,6 +91,7 @@ class Evaluator:
         }
 
         logging.raw(name, extra=log_extra)
+        print(output_string)  # also print to console for easier debugging
 
     def log_raw_result(self, result: BuildResult | TestResult | None, prefix: str | None = None) -> None:
         if not self.dump_raw_outputs:
@@ -379,6 +379,7 @@ class Evaluator:
         ker.runtime = np.mean([stats["mean"] for stats in ker.runtime_stats.values()])
 
         # -------- Part 3: profiler feedback --------
+        profile_custom_model = self.config.get("eval_config", {}).get("profile_custom_model", True)
         try:
             # Select profiler based on language
             profiler_feedback_class = get_profiler_feedback_class(
@@ -386,9 +387,13 @@ class Evaluator:
             )
             profiler_feedback = profiler_feedback_class()
             profiler_name = profiler_feedback.name
-            profiler_collated_data, profiler_feedback_str = profiler_feedback.collate_and_create_feedback(
-                {k: v.output_data for k, v in test_result.trace_results.items() if v.output_data},
-                worker_info=test_result.worker_info,
+            profiler_collated_data, profiler_feedback_str = (
+                profiler_feedback.collate_and_create_feedback(
+                    {k: v.output_data for k, v in test_result.trace_results.items() if v.output_data},
+                    worker_info=test_result.worker_info,
+                )
+                if profile_custom_model
+                else ({}, "")
             )
             if profiler_collated_data:
                 ker.profiler_data[profiler_name] = profiler_collated_data

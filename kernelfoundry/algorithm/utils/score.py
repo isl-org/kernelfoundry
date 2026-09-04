@@ -30,7 +30,12 @@ def compute_runtime_improvement(exec_result, level: int, task_name: str, gpu_arc
     if isinstance(gpu_arch, list) and len(gpu_arch) > 0:
         warnings.warn("Currently only single gpu_arch supported for computing runtime improvement!")
     arch = gpu_arch if isinstance(gpu_arch, str) else gpu_arch[0]
-    assert arch in GPU_ARCH_TO_BL_TIME, f"Baseline times not available for architecture {arch}"
+    if arch not in GPU_ARCH_TO_BL_TIME:
+        warnings.warn(
+            f"No baseline times recorded for architecture '{arch}'; runtime_improvement will not be "
+            f"computed. Recorded architectures: {', '.join(sorted(GPU_ARCH_TO_BL_TIME))}."
+        )
+        return exec_result
     platform = GPU_ARCH_TO_BL_TIME[arch]
 
     with db.SessionRO() as session:

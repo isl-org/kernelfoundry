@@ -33,7 +33,8 @@ def main(config: dict, build_function: str, output_path: Path):
             f"Could not find a task test class in {task.__file__!r} that "
             f"derives from TestBase and defines '{build_function}()'"
         )
-    artifacts = getattr(instance, build_function)(gpu_arch=config["gpu_arch"])
+    buildtime_params = (config.get("hyperparameters") or {}).get("buildtime") or {}
+    artifacts = getattr(instance, build_function)(gpu_arch=config["gpu_arch"], **buildtime_params)
     with open(output_path, "w") as f:
         json.dump({"artifacts": artifacts}, f, indent=4)
 

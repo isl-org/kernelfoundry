@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 430" width="700" height="430" role="img" aria-label="A task package folder contains config.yaml, task.py, a kernel file and conftest.py. The kernel file is shown expanded: an EVOLVE_START and EVOLVE_END pair brackets the only region KernelFoundry rewrites, while task.py carries the optional REFERENCE block that a candidate is compared against and the optional USER_INSTRUCTIONS block that steers the model. All three markers live inside comments.">
+  <rect x="0" y="0" width="700" height="430" fill="#ffffff"/>
+  <g font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+    <text x="20" y="28" font-size="12" font-weight="600" fill="#57606a" letter-spacing="0.4">THE FOLDER YOU SUBMIT</text>
+    <rect x="20" y="40" width="300" height="150" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+    <text x="36" y="64" font-size="13" font-weight="600" font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace" fill="#1f2328">my_task/</text>
+    <text x="44" y="88" font-size="12" font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace" fill="#57606a">├─</text>
+    <text x="68" y="88" font-size="12" font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace" fill="#1f2328">config.yaml</text>
+    <text x="168" y="88" font-size="10.5" fill="#57606a">task name, language, gpu_arch</text>
+    <text x="44" y="113" font-size="12" font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace" fill="#57606a">├─</text>
+    <text x="68" y="113" font-size="12" font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace" fill="#1f2328">task.py</text>
+    <text x="168" y="113" font-size="10.5" fill="#57606a">reference and tests</text>
+    <text x="44" y="138" font-size="12" font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace" fill="#57606a">├─</text>
+    <text x="68" y="138" font-size="12" font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace" fill="#1f2328">kernel.sycl</text>
+    <text x="168" y="138" font-size="10.5" fill="#57606a">the file the model rewrites</text>
+    <text x="44" y="163" font-size="12" font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace" fill="#57606a">└─</text>
+    <text x="68" y="163" font-size="12" font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace" fill="#1f2328">conftest.py</text>
+    <text x="168" y="163" font-size="10.5" fill="#57606a">include unchanged</text>
+    <path d="M 320 133 H 352" fill="none" stroke="#6e7781" stroke-width="1.4" stroke-dasharray="4 3"/>
+    <text x="336" y="124" text-anchor="middle" font-size="10" fill="#57606a">opened</text>
+    <text x="360" y="28" font-size="12" font-weight="600" fill="#57606a" letter-spacing="0.4">INSIDE kernel.sycl</text>
+    <rect x="360" y="40" width="320" height="150" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+    <text x="376" y="62" font-size="11" font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace" fill="#57606a">#include &lt;sycl/sycl.hpp&gt;</text>
+    <rect x="372" y="74" width="296" height="102" rx="4" fill="#dafbe1" stroke="#4ac26b"/>
+    <text x="384" y="94" font-size="11" font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace" fill="#1f2328">// [EVOLVE_START]</text>
+    <text x="396" y="118" font-size="11" font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace" fill="#57606a">your kernel, or nothing at all</text>
+    <text x="396" y="134" font-size="11" font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace" fill="#57606a">to generate one from scratch</text>
+    <text x="384" y="164" font-size="11" font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace" fill="#1f2328">// [EVOLVE_END]</text>
+    <text x="520" y="208" text-anchor="middle" font-size="11" font-weight="600" fill="#1f2328">the only part KernelFoundry rewrites</text>
+    <text x="520" y="224" text-anchor="middle" font-size="10.5" fill="#57606a">required; everything outside it is left untouched</text>
+    <text x="20" y="264" font-size="12" font-weight="600" fill="#57606a" letter-spacing="0.4">INSIDE task.py, BOTH OPTIONAL</text>
+    <rect x="20" y="276" width="320" height="86" rx="6" fill="#f0f8ff" stroke="#54aeff"/>
+    <text x="36" y="298" font-size="11" font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace" fill="#1f2328"># [REFERENCE_START]</text>
+    <text x="48" y="318" font-size="11" font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace" fill="#57606a">torch.matmul(a, b)</text>
+    <text x="36" y="338" font-size="11" font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace" fill="#1f2328"># [REFERENCE_END]</text>
+    <text x="36" y="356" font-size="10.5" fill="#57606a">what a candidate is compared against</text>
+    <rect x="360" y="276" width="320" height="86" rx="6" fill="#fff8c5" stroke="#d4a72c"/>
+    <text x="376" y="298" font-size="11" font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace" fill="#1f2328"># [USER_INSTRUCTIONS_START]</text>
+    <text x="388" y="318" font-size="11" font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace" fill="#57606a">try tiling; keep it generic</text>
+    <text x="376" y="338" font-size="11" font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace" fill="#1f2328"># [USER_INSTRUCTIONS_END]</text>
+    <text x="376" y="356" font-size="10.5" fill="#57606a">free-form guidance passed to the model</text>
+    <text x="350" y="400" text-anchor="middle" font-size="11" fill="#57606a">All three markers sit inside comments, so they are valid in .py and .cpp alike. The blocks may live in any file.</text>
+  </g>
+</svg>

@@ -185,6 +185,9 @@ class Task(Base):
                     continue
                 # sha.update(path.encode('utf-8')) # include file path
                 content = data[path]
+                if isinstance(content, dict):
+                    # Keep the task id stable: hash only content so mode/mtime don't change it.
+                    content = content.get("content", "")
                 if isinstance(content, str):
                     content = content.encode("utf-8")
                 sha.update(content)  # include the file content
@@ -211,13 +214,26 @@ class Job(Base):
     archived_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, comment="When job was archived"
     )
+    input_tokens: Mapped[int | None] = mapped_column(
+        default=0, comment="Aggregated prompt/input tokens used by this job"
+    )
+    output_tokens: Mapped[int | None] = mapped_column(
+        default=0, comment="Aggregated completion/output tokens used by this job"
+    )
+    cached_input_tokens: Mapped[int | None] = mapped_column(
+        default=0,
+        comment="Aggregated cache-read input tokens used by this job (subset of input_tokens's original, "
+        "pre-discount count -- not additive with input_tokens)",
+    )
     config: Mapped[dict[str, Any] | None] = mapped_column(comment="This is a json object with the config used")
 
     def __str__(self):
         return (
             f"Job(id={self.id}, task_id={self.task_id}, status={self.status}, progress={self.progress}, "
             f"created_at={self.created_at}, started_at={self.started_at}, finished_at={self.finished_at}, "
-            f"archived_at={self.archived_at}, config={self.config})"
+            f"archived_at={self.archived_at}, input_tokens={self.input_tokens}, "
+            f"output_tokens={self.output_tokens}, cached_input_tokens={self.cached_input_tokens}, "
+            f"config={self.config})"
         )
 
 

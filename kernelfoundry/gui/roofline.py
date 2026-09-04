@@ -257,10 +257,11 @@ class RooflineUtils:
             for vtune_col, out_col in DIRECT_MAPPINGS.items():
                 row[out_col] = _f(vtune_col) or 0.0
 
-            # Derived: bytes = bandwidth × time (approximate — VTune timing is
-            # event-based, but these are needed by the roofline chart for
-            # arithmetic intensity. The SVG labels are pre-substituted to show
-            # GB/s directly, so the inaccuracy doesn't surface there.)
+            # Derived: bytes = bandwidth × time. This corresponds exactly to VTune's own
+            # reported GB/s,  but that GB/s itself is only a coarse,
+            # ~1ms-sampled average attributed per computing-task (unlike Unitrace's exact
+            # per-kernel byte counts), and can understate true bandwidth for kernels with many
+            # short invocations. See the "*" caveat surfaced in get_chart_options_for_kernel.
             row["GPU_MEMORY_BYTE_READ[bytes]"] = row["GPU_MEMORY_BYTE_READ_RATE[GBpS]"] * 1e9 * total_runtime_s
             row["GPU_MEMORY_BYTE_WRITE[bytes]"] = row["GPU_MEMORY_BYTE_WRITE_RATE[GBpS]"] * 1e9 * total_runtime_s
             # SVG template computes hit rate as 100*L3_HIT/(L3_HIT+L3_MISS);
@@ -408,7 +409,7 @@ class RooflineUtils:
 
         # print(title, len(series))
         options = {
-            "title": {"text": title, "textStyle": {"fontSize": 12}},
+            "title": {"text": f"Kernel: {title}", "textStyle": {"fontSize": 16}},
             "xAxis": {
                 "name": "instructions/byte",
                 "type": "log",
@@ -809,8 +810,30 @@ class RooflineUtils:
                     except:
                         return str(v)
 
+                # Notes for VTune metrics inaccuracies
+                notes = {
+                    "__note__": (
+                        "* fields are VTune-sampled averages, not exact per-kernel "
+                        "measurements (unlike Unitrace) — can understate true "
+                        "bandwidth for short kernels."
+                    )
+                }
+
+                # If SIMD-width variants of this kernel were merged (see
+                # VTune._parse_tsv_reports), Total Time is summed across variants but
+                # GpuTime[ns] (and every metric below) reflects only the longest-running
+                # variant — flag it when that gap is non-trivial.
+                reported_total_s = _fv("Computing Task:Total Time")
+                gpu_time_s = (metrics.get("GpuTime[ns]") or 0) / 1e9
+                if isinstance(reported_total_s, float) and gpu_time_s and reported_total_s > gpu_time_s * 1.05:
+                    notes["__merge_note__"] = (
+                        f"Total Time across all SIMD variants of this kernel is {reported_total_s:.3f}s, "
+                        f"but the metrics below reflect only the longest-running variant "
+                        f"({gpu_time_s:.3f}s) — other variants' time/instances aren't included."
+                    )
+
                 # Sidebar info: (display_label, value) — pulled from transformed metrics or raw kernel_cols
-                freqs_runtime_info["VTune"] = {
+                freqs_runtime_info["VTune"] = notes | {
                     k: v
                     for k, v in {
                         "GpuTime[ns]": metrics.get("GpuTime[ns]"),
@@ -821,8 +844,8 @@ class RooflineUtils:
                         "XVE Stalled (%)": _fv("XVE Array:Stalled(%)"),
                         "XVE Idle (%)": _fv("XVE Array:Idle(%)"),
                         "Thread Occupancy (%)": _fv("XVE Threads Occupancy(%)"),
-                        "GPU Mem BW Read (GB/s)": metrics.get("GPU_MEMORY_BYTE_READ_RATE[GBpS]"),
-                        "GPU Mem BW Write (GB/s)": metrics.get("GPU_MEMORY_BYTE_WRITE_RATE[GBpS]"),
+                        "GPU Mem BW Read * (GB/s)": metrics.get("GPU_MEMORY_BYTE_READ_RATE[GBpS]"),
+                        "GPU Mem BW Write * (GB/s)": metrics.get("GPU_MEMORY_BYTE_WRITE_RATE[GBpS]"),
                         "L3 BW Read (GB/s)": metrics.get("L3_READ[GBpS]"),
                         "L3 BW Write (GB/s)": metrics.get("L3_WRITE[GBpS]"),
                         "L3 Busy (%)": _fv("GPU L3:Busy(%)"),
@@ -980,6 +1003,9 @@ def render_kernel_charts_section(
                             ui.label(section).classes("font-bold mt-4 break-all")
                             ui.label("")
                             for key, value in metrics.items():
+                                if key.endswith("__note__"):
+                                    ui.label(str(value)).classes("col-span-2 italic text-orange-600 break-words mt-1")
+                                    continue
                                 ui.label(key).classes("break-all")
                                 if "[%]" in key and isinstance(value, (int, float)):
                                     value = f"{value:.2f}%"
@@ -1089,7 +1115,7 @@ div.nicegui-code * > pre {
     if kernel is None:
         ui.label("Kernel not found").classes("text-red-500")
         return
-    with ui.expansion("Worker info").classes("w-full mb-2"):
+    with ui.expansion("Worker info").classes("self-start mb-2"):
         with ui.row().classes("grid grid-cols-8 min-w-full"):
             with ui.column().classes("col-span-4 gap-0"):
                 if kernel.eval_worker_info is None:

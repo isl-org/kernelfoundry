@@ -108,7 +108,7 @@ class FeedbackHelper:
         """Call feedback LLM that analyses the console output, or fall back to the console output itself."""
         if parent_program is not None:
             #### Task code path
-            prior_gen_code = parent_program.code
+            prior_gen_code = parent_program.code_as_str
             if parent_program.is_program0:  # The first program does not have console output
                 console_output = None
             else:

@@ -1,0 +1,15 @@
+# Inference config with only a single model
+_target_: kernelfoundry.algorithm.inference_server.LLMEnsemble
+servers:
+  - _target_: kernelfoundry.algorithm.inference_server.InferenceServer
+    server_type: "openai"
+    # Any model your provider offers works here; DEFAULT_MODELS at the top of
+    # kernelfoundry/algorithm/inference_server.py only supplies the model_name="default"
+    # fallback. Set server_type: anthropic to use a Claude model instead.
+    model_name: "gpt-5.2"
+    # maximum number of tokens for llm response (reasoning + kernel)
+    max_tokens: 16000
+    temperature: 0.0
+    num_completions: 1  # number of completions to generate
+    verbose: False
+weights: uniform

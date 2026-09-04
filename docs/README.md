@@ -12,17 +12,9 @@ Install the documentation dependencies:
 pip install .[docs]
 ```
 
-Or install the required packages directly:
-
-```bash
-pip install sphinx sphinx-rtd-theme
-```
-
-You also need to install the package dependencies (numpy, pytest) for the autodoc extension to import the modules:
-
-```bash
-pip install numpy pytest
-```
+That installs Sphinx, the [shibuya](https://shibuya.lepture.com/) theme, `sphinx-copybutton` and
+`myst-parser`. Autodoc imports the package to read docstrings, so the package's own dependencies
+must be installed too: `pip install -e .` from the repository root is the simplest way.
 
 ### Build HTML Documentation
 
@@ -30,8 +22,12 @@ To build the HTML documentation:
 
 ```bash
 cd docs
-make html
+sphinx-build -M html . _build
 ```
+
+`make html` works too where `make` is available, but `make.bat` activates a `.venv` at the
+repository root when `VIRTUAL_ENV` is unset, which is wrong for any environment that lives
+elsewhere. The `sphinx-build` form above is portable and uses whichever interpreter is active.
 
 The generated HTML documentation will be in `_build/html/`. Open `_build/html/index.html` in your browser to view the documentation.
 
@@ -62,11 +58,20 @@ Some useful formats include:
 ## Documentation Structure
 
 - `conf.py` - Sphinx configuration file
-- `index.rst` - Main documentation index
-- `api/` - API reference documentation
+- `index.rst` - Landing page and toctrees
+- `guide/` - User guide, written in **Markdown** (via `myst-parser`)
+- `api/public.rst` - Curated public API: what a task author actually uses
+- `api/modules.rst` - Full recursive module index, including internals
 - `_static/` - Static files (CSS, images, etc.)
 - `_templates/` - Custom Sphinx templates
 - `_build/` - Generated documentation (excluded from git)
+
+The published site is assembled by `.github/workflows/deploy-pages.yml`, which builds this
+directory and merges it into the separate website repository under `/docs/`.
+
+Prose belongs in `guide/` as Markdown; the API reference is generated from docstrings. See
+[CONTRIBUTING.md](../CONTRIBUTING.md#documentation) for which content belongs here versus in the
+README.
 
 ## Docstring Format
 

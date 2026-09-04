@@ -1,0 +1,32 @@
+diff_format: False
+finetuning_prompt: False
+
+# template manager specifics
+num_optimization_tips: 2
+include_inspirations: True
+include_best_program: True
+include_hardware_specs: True
+allow_templated: False 
+prompt_template_fn: "main_prompt_agentic.j2"
+
+
+# reference language
+reference_language: Pytorch
+second_ref_language: null
+
+# Meta-prompting configuration (Science-CodeEvolve style holistic evolution)
+# Set meta_prompting.enabled=true to enable holistic prompt evolution
+# Or use the meta_prompting.yaml config: +prompt=meta_prompting
+meta_prompting:
+  enabled: false
+  mode: holistic
+  evolution_interval: 10
+  evolution_batch_size: 2
+  min_samples_for_evolution: 5
+  exploration_rate: 0.2
+  selection_temperature: 1.0
+  max_prompts: 50
+  output_subdir: "prompt_evolution"
+
+# RAG
+rag: []

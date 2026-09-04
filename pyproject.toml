@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kernelfoundry"
 dynamic = ["version"]
-description = "A Python package for kernel testing"
+description = "Make a GPU kernel faster: point a coding agent at it, or run the evolutionary search yourself"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
@@ -30,17 +30,21 @@ ui = [
     "networkx"
 ]
 algo = [
-    "autoroot",
+    "python-dotenv",
     "modal",
     "openai",
+    "anthropic",
     "boto3",
     "packaging",
+    "pandas",
+    "jinja2",
     "hydra-core",
     "pydra_config",
     "tqdm",
     "einops",
     "scipy",
     "clang==20.1.5",
+    "libclang-ng",
     "pybind11",
     "openvino", # for baseline times (torch.compile)
     "pyopencl",
@@ -65,6 +69,7 @@ docs = [
     "sphinx >= 7.0",
     "shibuya", # sphinx theme
     "sphinx-copybutton",
+    "myst-parser", # lets the user guide under docs/guide/ be written in markdown
 ]
 mcp = [
     "fastmcp",
@@ -74,13 +79,30 @@ mcp = [
 ]
 all = [ "kernelfoundry[ui,algo,dev,docs,mcp]" ]
 
+[project.scripts]
+kernelfoundry-gui = "kernelfoundry.gui.__main__:main"
+
 [project.urls]
 Homepage = "https://github.com/isl-org/kernelfoundry"
 Repository = "https://github.com/isl-org/kernelfoundry"
 
+[tool.setuptools.package-data]
+# include all required files that are not .py but are required in the wheel
+kernelfoundry = [
+    "configs/**/*.yaml",
+    "algorithm/prompts/templates/*.j2",
+    "algorithm/prompts/kernel_examples/*.cu",
+    "algorithm/prompts/kernel_examples/*.sycl",
+    "algorithm/prompts/*.json",
+    "eval_pipeline/utils/*.j2",
+    "eval_pipeline/utils/*.sh",
+    "gui/figure_templates/*.svg",
+    "mcp_server/*.md",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
-exclude = ["templates*"]
+include = ["kernelfoundry*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "kernelfoundry.__version__"}

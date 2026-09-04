@@ -4,8 +4,11 @@ from typing import Callable
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from tempfile import TemporaryDirectory
+from omegaconf import DictConfig, OmegaConf
 from kernelfoundry.eval_pipeline.utils.memory_file_map import MemoryFileMap
 from kernelfoundry.eval_pipeline.database.tables import Task as DB_Task
+from kernelfoundry.eval_pipeline.utils.custom_task_helper import blocks_to_str
+from kernelfoundry.eval_pipeline.utils.formatting import strip_terminal_escapes
 
 
 @dataclass
@@ -24,6 +27,11 @@ class ProcessResult:
             self.stdout = self.stdout.decode("utf-8", errors="replace")
         if isinstance(self.stderr, bytes):
             self.stderr = self.stderr.decode("utf-8", errors="replace")
+        self.stdout = strip_terminal_escapes(self.stdout)
+        self.stderr = strip_terminal_escapes(self.stderr)
+        if self.message is not None:
+            # Ours, but it interpolates captured child output in several places.
+            self.message = strip_terminal_escapes(self.message)
 
     def combine_output(self, include_message: bool = True) -> str:
         """Combines stdout and stderr into a single string."""
@@ -163,8 +171,8 @@ class Task:
     config: dict
 
     # The detected annotated blocks with the mapping key->file_path->content
-    # For example:   {'EVOLVE': {'src/kernel.sycl': '...code...'}}
-    blocks: dict[str, dict[str, str]] = field(default_factory=dict)
+    # For example:   {'EVOLVE': {'src/kernel.sycl': ['block1', 'block2']}}
+    blocks: dict[str, dict[str, list[str]]] = field(default_factory=dict)
 
     # Not an actual result of a subprocess but used to capture the result of code extraction
     # and handle it in the same manner as the result of the build and test steps.
@@ -177,8 +185,7 @@ class Task:
     test_result: TestResult | None = None
     test_result_reference: TestResult | None = None
 
-    hyperparameters_buildtime: dict | None = None
-    hyperparameters_runtime: dict | None = None
+    hyperparameters: dict | None = None
 
     def print_info(self, print_fn: Callable | None = None) -> None:
         """Prints information about the Task."""
@@ -192,6 +199,14 @@ class Task:
         print_fn(f"  Profile tests: \n{dict_to_yaml_str(self.profile_tests,4)}")
         print_fn(f"  Config: \n{dict_to_yaml_str(self.config,4)}")
         print_fn(f"  Blocks: \n{dict_to_yaml_str(list(self.blocks.keys()),4)}")
+
+    def apply_config(self, config: DictConfig) -> "Task":
+        """Attaches an execution config to the Task and transfers config-driven attributes."""
+        self.config = OmegaConf.to_container(config, resolve=True)
+        self.has_build_step = self.config.get("has_build_step", self.has_build_step)
+        self.has_reference_build_step = self.config.get("has_reference_build_step", self.has_reference_build_step)
+        self.hyperparameters = self.config.get("hyperparameters", self.hyperparameters)
+        return self
 
     def validate(self):
         """Checks if the Task is valid."""
@@ -250,8 +265,10 @@ class Task:
             pass
         if "overrides.yml" in task_data:
             del task_data.file_map["overrides.yml"]
+            task_data.meta_map.pop("overrides.yml", None)
         elif "overrides.yaml" in task_data:
             del task_data.file_map["overrides.yaml"]
+            task_data.meta_map.pop("overrides.yaml", None)
 
         keywords = ["REFERENCE", "EVOLVE", "USER_INSTRUCTIONS"]
         blocks = {}
@@ -280,12 +297,15 @@ class Task:
                 profile_tests=profile_tests,
                 config=config,
                 blocks=blocks,
+                hyperparameters=config.get("hyperparameters"),
             ),
             metadata,
         )
 
     def with_blocks(
-        self, blocks: dict[str, dict[str, str | None]] | dict[str, str | None], keep_test_result_reference: bool = False
+        self,
+        blocks: dict[str, dict[str, list[str] | None]] | dict[str, str | None],
+        keep_test_result_reference: bool = False,
     ) -> "Task":
         """Returns a new Task with the given blocks updated.
 
@@ -294,7 +314,7 @@ class Task:
         keep_test_result_reference=True.
 
         Args:
-            blocks (dict[str, dict[str, str|None]] | dict[str, str|None]): The blocks to update.
+            blocks (dict[str, dict[str, list[str] | None]] | dict[str, str | None]): The blocks to update.
                 If the task has only a single block for a key, a simple dict can be provided
                 mapping key->content. If multiple blocks exist for a key, a dict mapping
                 key->file_path->content must be provided.
@@ -334,27 +354,29 @@ class Task:
                 ),
                 test_result_reference=self.test_result_reference if keep_test_result_reference else None,
                 build_result_reference=self.build_result_reference if keep_test_result_reference else None,
-                hyperparameters_buildtime=self.hyperparameters_buildtime,
-                hyperparameters_runtime=self.hyperparameters_runtime,
+                hyperparameters=self.hyperparameters,
             )
 
         new_task_data = MemoryFileMap()
         # Copy existing data
         for file_key in self.task_data.file_map:
             new_task_data.file_map[file_key] = self.task_data.file_map[file_key]
+            if file_key in self.task_data.meta_map:
+                new_task_data.meta_map[file_key] = self.task_data.meta_map[file_key]
 
         # update blocks
         for key, value in blocks.items():
             if isinstance(value, str):
-                file_path = self.blocks[key].keys()
-                if len(file_path) != 1:
+                file_paths = list(self.blocks[key].keys())
+                if len(file_paths) != 1 or len(self.blocks[key][file_paths[0]]) != 1:
                     raise ValueError(
-                        f"Multiple blocks exist for key '{key}'. Provide a dict mapping key->file_path->content."
+                        f"Multiple blocks exist for key '{key}'. Provide a dict mapping key->file_path->list[content]."
                     )
-                update_block(new_task_data, key=key, path=list(file_path)[0], content=value)
+                update_block(new_task_data, key=key, path=file_paths[0], content=value, block_index=0)
             else:
-                for path, content in value.items():
-                    update_block(new_task_data, key=key, path=path, content=content)
+                for path, content_list in value.items():
+                    for idx, content in enumerate(content_list):
+                        update_block(new_task_data, key=key, path=path, content=content, block_index=idx)
 
         # rebuild blocks from file map
         keywords = ["REFERENCE", "EVOLVE", "USER_INSTRUCTIONS"]
@@ -380,8 +402,7 @@ class Task:
             ),
             test_result_reference=self.test_result_reference if keep_test_result_reference else None,
             build_result_reference=self.build_result_reference if keep_test_result_reference else None,
-            hyperparameters_buildtime=self.hyperparameters_buildtime,
-            hyperparameters_runtime=self.hyperparameters_runtime,
+            hyperparameters=self.hyperparameters,
         )
 
     def encode(self) -> dict:
@@ -412,8 +433,7 @@ class Task:
             "test_result_reference": (
                 asdict(self.test_result_reference) if self.test_result_reference is not None else None
             ),
-            "hyperparameters_buildtime": self.hyperparameters_buildtime,
-            "hyperparameters_runtime": self.hyperparameters_runtime,
+            "hyperparameters": self.hyperparameters,
         }
 
     @classmethod
@@ -438,8 +458,7 @@ class Task:
             build_result_reference=BuildResult.decode(data.get("build_result_reference")),
             test_result=TestResult.decode(data.get("test_result")),
             test_result_reference=TestResult.decode(data.get("test_result_reference")),
-            hyperparameters_buildtime=data.get("hyperparameters_buildtime"),
-            hyperparameters_runtime=data.get("hyperparameters_runtime"),
+            hyperparameters=data.get("hyperparameters"),
         )
 
     def to_database_task(self):
@@ -452,17 +471,9 @@ class Task:
         # get task data
         task_data_dict = self.task_data.encode()
 
-        def get_block(block_indicator):
-            """Helper function to convert the blocks into strings"""
-            blocks_for_indicator = self.blocks.get(block_indicator, {})
-            # Combine all blocks
-            combined_blocks = ""
-            for k, v in blocks_for_indicator.items():
-                header = f"========= {block_indicator} - {k} =========\n"
-                combined_blocks += header + v
-            if combined_blocks == "":
-                return None
-            return combined_blocks
+        def blocks_for_db(block_indicator: str) -> str | None:
+            b = self.blocks.get(block_indicator, {})
+            return blocks_to_str(b) if b else None
 
         # Create the Task object
         db_task = DB_Task(
@@ -473,11 +484,11 @@ class Task:
             task_data=task_data_dict,
             correctness_tests=self.correctness_tests,
             profile_tests=self.profile_tests,
-            evolve_block=get_block("EVOLVE"),
-            reference_block=get_block("REFERENCE"),
-            user_instructions_block=get_block("USER_INSTRUCTIONS"),
-            hyperparameters_buildtime=self.hyperparameters_buildtime,
-            hyperparameters_runtime=self.hyperparameters_runtime,
+            evolve_block=blocks_for_db("EVOLVE"),
+            reference_block=blocks_for_db("REFERENCE"),
+            user_instructions_block=blocks_for_db("USER_INSTRUCTIONS"),
+            hyperparameters_buildtime=(self.hyperparameters or {}).get("buildtime"),
+            hyperparameters_runtime=(self.hyperparameters or {}).get("runtime"),
         )
         # generate hash
         db_task.generate_hash_id(task_data_dict)

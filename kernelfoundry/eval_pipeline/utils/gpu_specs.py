@@ -137,6 +137,44 @@ GPU_SPEC_INFO = {
         "Shared memory capacity per SM": "164 KB",
         "Maximum shared memory per thread block": "163 KB",
     },
+    "M40": {
+        "GPU Architecture": "Maxwell",
+        "GPU Memory": "24GB GDDR5",
+        "Memory Bandwidth": "288 GB/s",
+        "FP32 TFLOPS": "7",
+        "FP64 TFLOPS": "0.21",
+        "Register File Size": "64K 32-bit registers per SM",
+        "Maximum number of registers per thread": "255",
+        "Maximum number of thread blocks per SM": "32",
+        "Shared memory capacity per SM": "96 KB",
+        "Maximum shared memory per thread block": "48 KB",
+    },
+    "P100": {
+        "GPU Architecture": "Pascal",
+        "GPU Memory": "16GB HBM2",
+        "Memory Bandwidth": "732 GB/s",
+        "FP64 TFLOPS": "4.7",
+        "FP32 TFLOPS": "9.3",
+        "FP16 TFLOPS": "18.7",
+        "Register File Size": "64K 32-bit registers per SM",
+        "Maximum number of registers per thread": "255",
+        "Maximum number of thread blocks per SM": "32",
+        "Shared memory capacity per SM": "64 KB",
+        "Maximum shared memory per thread block": "48 KB",
+    },
+    "V100": {
+        "GPU Architecture": "Volta",
+        "GPU Memory": "16GB HBM2",
+        "Memory Bandwidth": "900 GB/s",
+        "FP64 TFLOPS": "7.8",
+        "FP32 TFLOPS": "15.7",
+        "FP16 Tensor Core TFLOPS": "125",
+        "Register File Size": "64K 32-bit registers per SM",
+        "Maximum number of registers per thread": "255",
+        "Maximum number of thread blocks per SM": "32",
+        "Shared memory capacity per SM": "96 KB",
+        "Maximum shared memory per thread block": "96 KB",
+    },
     "Flex 170": {
         "Xe-cores": 32,
         "Render Slices": 8,
@@ -187,6 +225,59 @@ GPU_SPEC_INFO = {
         "Memory Speed": 19,
         "ISA_GPU": "Xe2-HPG",
     },
+    "B70": {
+        "Xe-cores": 32,
+        "Render Slices": 8,
+        "Ray Tracing Units": 32,
+        "Intel® Xe Matrix Extensions (Intel® XMX) Engines": 256,
+        "Xe Vector Engines": 256,
+        "Graphics Clock": 2280,
+        "GPU Peak TOPS (Int8)": 367,
+        "TBP": 230,
+        "PCI Express Configurations ‡": "PCI Express 5.0 x16",
+        "Device ID": "0xE223",
+        "Memory": "32 GB GDDR6",
+        "Memory Interface": "256 bit",
+        "Memory Bandwidth": 608,
+        "Memory Speed": 19,
+        "ISA_GPU": "Xe2-HPG",
+    },
+    "B60": {
+        "Xe-cores": 20,
+        "Render Slices": 5,
+        "Ray Tracing Units": 20,
+        "Intel® Xe Matrix Extensions (Intel® XMX) Engines": 160,
+        "Xe Vector Engines": 160,
+        "Graphics Clock": 2400,
+        "GPU Peak TOPS (Int8)": 197,
+        "TBP": 200,
+        "PCI Express Configurations ‡": "PCI Express 5.0 x8",
+        "Device ID": "0xE211",
+        "Memory": "24 GB GDDR6",
+        "Memory Interface": "192 bit",
+        "Memory Bandwidth": 456,
+        "Memory Speed": 19,
+        "ISA_GPU": "Xe2-HPG",
+    },
+    # Data Center GPU Max 1550 (Ponte Vecchio, flagship 2-tile SKU).
+    "PVC": {
+        "Xe-cores": 128,
+        "Ray Tracing Units": 128,
+        "Intel® Xe Matrix Extensions (Intel® XMX) Engines": 1024,
+        "Xe Vector Engines": 1024,
+        "Graphics Base Clock": 900,
+        "Graphics Max Dynamic Clock": 1600,
+        "GPU Peak TOPS (Int8)": 1678,
+        "FP32/FP64 TFLOPS (vector)": 52,
+        "TF32 XMX TFLOPS": 419,
+        "TDP": 600,
+        "PCI Express Configurations ‡": "PCI Express 5.0 x16",
+        "Device ID": "0x0BD5",
+        "Memory": "128 GB HBM2e",
+        "Memory Interface": "1024 bit",
+        "Memory Bandwidth": 3276.8,
+        "ISA_GPU": "Xe-HPC",
+    },
 }
 
 GPU_SPEC_INFO_BY_CPU_NAME = {
@@ -218,7 +309,6 @@ GPU_SPEC_INFO_BY_CPU_NAME = {
         "Device ID": "0x64A0",
         "ISA_GPU": "Xe2-LPG",
     },
-    # added for codegen-lnl1
     "Intel(R) Core(TM) Ultra 7 268V 2.20GHz": {
         "Processor Number": "268V",
         "GPU Name": "Intel® Arc™ 140V GPU",
@@ -233,6 +323,67 @@ GPU_SPEC_INFO_BY_CPU_NAME = {
         "Device ID": "0x64A0",
         "ISA_GPU": "Xe2-LPG",
     },
+    # Meteor Lake, flagship 8-Xe-core config
+    "Intel(R) Core(TM) Ultra 7 165H": {
+        "Processor Number": "165H",
+        "GPU Name": "Intel® Arc™ Graphics",
+        "Graphics Max Dynamic Frequency": "2.3 GHz",
+        "GPU Peak TOPS (Int8)": "19",
+        "Xe-cores": 8,
+        "Ray Tracing": "Yes",
+        "Max Memory Size (dependent on memory type)": "96 GB",
+        "Memory Types": "Up to LPDDR5/X 7467 MT/s, Up to DDR5 5600 MT/s",
+        "Max # of Memory Channels": "2",
+        "Device ID": "0x7D55",
+        "ISA_GPU": "Xe-LPG",
+    },
+    # Arrow Lake-H, flagship mobile SKU (Arc 140T). Xe-LPG with added XMX matrix engines
+    "Intel(R) Core(TM) Ultra 9 285H": {
+        "Processor Number": "285H",
+        "GPU Name": "Intel® Arc™ 140T GPU",
+        "Graphics Max Dynamic Frequency": "2.35 GHz",
+        "GPU Peak TOPS (Int8)": "77",
+        "Xe-cores": 8,
+        "Ray Tracing": "Yes",
+        "Max Memory Size (dependent on memory type)": "128 GB",
+        "Memory Types": "Up to LPDDR5/X 8400 MT/s, Up to DDR5 6400 MT/s",
+        "Max # of Memory Channels": "2",
+        "Device ID": "0x7D51",
+        "ISA_GPU": "Xe-LPG",
+    },
+    # Raptor Lake, representative mobile SKU with the largest iGPU (96EU Iris Xe).
+    "Intel(R) Core(TM) i9-13900H": {
+        "Processor Number": "i9-13900H",
+        "GPU Name": "Intel® Iris® Xe Graphics",
+        "Graphics Max Dynamic Frequency": "1.50 GHz",
+        "Execution Units": 96,
+        "Max Memory Size (dependent on memory type)": "96 GB",
+        "Memory Types": "Up to DDR5 5200 MT/s, Up to DDR4 3200 MT/s, Up to LPDDR5/x 6400 MT/s, Up to LPDDR4x 4267 MT/s",
+        "Max # of Memory Channels": "2",
+        "Device ID": "0xA7A0",
+        "ISA_GPU": "Xe-LP",
+    },
+    # Intel Panther Lake-H
+    # info: Pre-released Intel® processor code-named Panther Lake H 12Xe, EVQS, B0 stepping,
+    # production fused, CPUID 0xC06C2, BGA2540, 25W TDP, QDF: Q95W,
+    # 2.0GHz Base, up to 4.7GHz Turbo 4P/8E/4LP-E Cores, built-in graphics (192EU), integrated 3-tile NPU
+    # 64GB LP-DDR5x, 8533MT/s
+    # PTL iGPU: device IDs 0xB080, 0xB081, 0xB082, 0xB090, 0xB091, 0xB092, 0xB0A0, 0xB0A1, and 0xB0A2
+    # "Intel(R) Core(TM) Ultra 9 375H": {
+    "Genuine Intel(R) 0000": {  # TODO change to appropriate CPU name later -- dev board with PTL-H shows this CPU name
+        "Processor Number": "375H",
+        "GPU Name": "Intel® Graphics (0xb080)",
+        "Graphics Max Dynamic Frequency": "2.0 GHz",
+        "GPU Peak TOPS (Int8)": "180",
+        "Xe-cores": 12,
+        "Ray Tracing": "Yes",
+        "Max Memory Size (dependent on memory type)": "64 GB",
+        "Memory Types": "LPDDR5X up to 8533 MT/s",
+        "Max # of Memory Channels": "2",
+        "Memory Bandwidth": 133,
+        "Device ID": "0xC06C2",  # CPUID (the same?)
+        "ISA_GPU": "Xe3-LPG",
+    },
 }
 
 # in the prompt, for every kernel result we need to specify which hardware it ran on
@@ -242,18 +393,68 @@ ARCH_TO_NAME = {
     # "ampere": "Nvidia GeForce3090",
     "Ampere": "Nvidia RTX A6000",
     "ampere": "Nvidia RTX A6000",
-    "bmg": "Intel Battlemage",
+    "A100": "Nvidia A100",
+    "A6000": "Nvidia RTX A6000",
+    "bmg": "Intel Battlemage",  # keep bmg for backward compatibility, route to b580
+    "b580": "Intel Arc B580",
+    "b70": "Intel Arc Pro B70",
+    "b60": "Intel Arc Pro B60",
+    "Maxwell": "Nvidia Tesla M40",
+    "Pascal": "Nvidia Tesla P100",
+    "Volta": "Nvidia Tesla V100",
+    "Turing": "Nvidia T4",
+    "Hopper": "Nvidia H100",
+    "Ada": "Nvidia L40S",
+    "L40S": "Nvidia L40S",
+    "L4": "Nvidia L4",
     "lnl": "Intel Lunar Lake",
     "ptl": "Intel Panther Lake",
+    "mtl": "Intel Meteor Lake",
+    "arl": "Intel Arrow Lake",
+    "rpl": "Intel Raptor Lake",
+    "pvc": "Intel Data Center GPU Max (Ponte Vecchio)",
 }
 
 # for the prompt, the user specifies a gpu arch and we need to include the corresponding specs in the prompt
 ARCH_TO_SPECS = {
     "dg2": GPU_SPEC_INFO["Flex 170"],
+    "bmg": GPU_SPEC_INFO["B580"],  # keep bmg for backward compatibility, route to b580
+    "b580": GPU_SPEC_INFO["B580"],
+    "b70": GPU_SPEC_INFO["B70"],
+    "b60": GPU_SPEC_INFO["B60"],
+    "pvc": GPU_SPEC_INFO["PVC"],
     "Ampere": GPU_SPEC_INFO["A6000"],
     "ampere": GPU_SPEC_INFO["A6000"],
-    "bmg": GPU_SPEC_INFO["B580"],
+    "A100": GPU_SPEC_INFO["A100"],
+    "A6000": GPU_SPEC_INFO["A6000"],
+    "Maxwell": GPU_SPEC_INFO["M40"],
+    "Pascal": GPU_SPEC_INFO["P100"],
+    "Volta": GPU_SPEC_INFO["V100"],
+    "Turing": GPU_SPEC_INFO["T4"],
+    "Hopper": GPU_SPEC_INFO["H100"],
+    "Ada": GPU_SPEC_INFO["L40S"],
+    "L40S": GPU_SPEC_INFO["L40S"],
+    "L4": GPU_SPEC_INFO["L4"],
     "lnl": GPU_SPEC_INFO_BY_CPU_NAME["Intel(R) Core(TM) Ultra 7 268V"],
+    "ptl": GPU_SPEC_INFO_BY_CPU_NAME["Genuine Intel(R) 0000"],
+    "mtl": GPU_SPEC_INFO_BY_CPU_NAME["Intel(R) Core(TM) Ultra 7 165H"],
+    "arl": GPU_SPEC_INFO_BY_CPU_NAME["Intel(R) Core(TM) Ultra 9 285H"],
+    "rpl": GPU_SPEC_INFO_BY_CPU_NAME["Intel(R) Core(TM) i9-13900H"],
+}
+
+# maps a gpu_arch string to the Intel PCI device ids (lowercase hex, "0x" prefix)
+ARCH_TO_PCI_DEVICE_IDS = {
+    "lnl": ["0x64a0"],
+    "ptl": ["0xb080", "0xb081", "0xb082", "0xb090", "0xb091", "0xb092", "0xb0a0", "0xb0a1", "0xb0a2"],
+    "bmg": ["0xe20b"],  # # keep bmg for backward compatibility, route to b580
+    "b580": ["0xe20b"],
+    "b70": ["0xe223"],
+    "b60": ["0xe211"],
+    "pvc": ["0x0bd5"],
+    "dg2": ["0x56c0", "0x56a0"],  # Flex 170, A770
+    "mtl": ["0x7d55"],
+    "arl": ["0x7d51"],
+    "rpl": ["0xa7a0"],
 }
 
 # Same as above but keyed by Device ID which is easier to get programmatically
@@ -286,11 +487,11 @@ GPU_BEST_PRACTICES = [
     "Use specialized instructions based on the specific GPU architecture",
 ]
 
+# KernelBench baseline times - only available for few architectures
 GPU_ARCH_TO_BL_TIME = {
     "Ampere": "NVIDIA_RTX_A6000",
     "ptl": "Intel_PTL_H",
-    "bmg": "Intel_B580",
+    "bmg": "Intel_B580",  # keep bmg for backward compatibility, route to b580
+    "b580": "Intel_B580",
     "dg2": "Intel_Flex170",
-    "lnl": "Intel_LNL",
-    # 'A100_modal' 'Intel_A770' # currently not used
 }

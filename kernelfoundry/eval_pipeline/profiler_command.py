@@ -5,6 +5,7 @@ import io
 import os
 import json
 import re
+import shutil
 import subprocess
 from pathlib import Path
 import logging
@@ -13,8 +14,20 @@ from functools import partial
 import uuid
 
 # GPU architectures that are supported - can be extended
-VALID_CUDA_ARCHS = ["Maxwell", "Pascal", "Volta", "Turing", "Ampere", "Hopper", "Ada", "native"]
-VALID_XPU_ARCHS = ["lnl", "ptl", "bmg", "dg2"]
+VALID_CUDA_ARCHS = [
+    "Maxwell",
+    "Pascal",
+    "Volta",
+    "Turing",
+    "Ampere",
+    "Hopper",
+    "Ada",
+    "native",
+    "A100",
+    "A6000",
+    "L40S",
+    "L4",
+]
 
 _VTUNE_HOTSPOTS_COLUMNS_PASS1 = ",".join(
     [
@@ -60,6 +73,12 @@ _VTUNE_HOTSPOTS_COLUMNS_PASS2 = ",".join(
 )
 
 
+class ProfilerUnavailable(Exception):
+    """
+    Exception if profiler cannot be found
+    """
+
+
 class Profiler(ABC):
     """Abstract base class for profiler helpers"""
 
@@ -71,6 +90,10 @@ class Profiler(ABC):
     def name(self) -> str:
         """Return the name of the profiler"""
         pass
+
+    def unavailable_reason(self) -> str | None:
+        """Why this profiler cannot run on this machine, or ``None`` if nothing rules it out."""
+        return None
 
     @abstractmethod
     def wrap_cmd(self, cmd: str) -> str:
@@ -201,20 +224,57 @@ class NCU(Profiler):
     def name(self) -> str:
         return "ncu"
 
+    def unavailable_reason(self) -> str | None:
+        if shutil.which(self.ncu_cmd) is None:
+            return (
+                f"{self.ncu_cmd} is not on PATH. It ships with the CUDA toolkit; add the toolkit's "
+                "bin directory to PATH, or set eval_config.profile_custom_model: false to run "
+                "without profiling."
+            )
+        return None
+
     def wrap_cmd(self, cmd: str) -> str:
-        """Wrap the given command with NCU profiling command"""
+        """Wrap the given command with NCU profiling command.
+
+        ``ncu`` needs elevated privileges to read performance counters unless the driver has been
+        told to allow it for all users. Since sudo is disabled on Windows, the command is issued plainly:
+        it succeeds where counter access has been granted, and where it has not, read_output explains what to do.
+
+        See https://developer.nvidia.com/nvidia-development-tools-solutions-err_nvgpuctrperm-permission-issue-performance-counters
+        for how to enable non-root profiling on either platform.
+        """
         output_file = self.output_dir / "ncu_report.csv"
+        ncu = f"{self.ncu_cmd} --set detailed --csv --log-file {output_file.as_posix()} {cmd}"
+        if os.name == "nt":
+            return ncu
         # Note that sudo-rs which is used in ubuntu 25.10 does not support --preserve-env
-        # See https://developer.nvidia.com/nvidia-development-tools-solutions-err_nvgpuctrperm-permission-issue-performance-counters
-        # for options to enable non-root profiling
-        return f"""sudo -E env "PYTHONPATH=$PYTHONPATH" {self.ncu_cmd} --set detailed --csv --log-file {output_file.as_posix()} {cmd}"""
+        return f"""sudo -E env "PYTHONPATH=$PYTHONPATH" {ncu}"""
 
     def read_output(self) -> dict[str, str]:
         """Read the profiler output into a dictionary that maps the filename to its content"""
         trace_data = {}
 
         output_file = self.output_dir / "ncu_report.csv"
-        text = output_file.read_text()
+        if not output_file.is_file():
+            # No report means ncu never got far enough to write one. Raising a typed error
+            missing = self.unavailable_reason()
+            if missing:
+                raise ProfilerUnavailable(
+                    f"{self.ncu_cmd} wrote no report to {output_file}. {missing} "
+                    "If the run was containerised, check the image rather than this host."
+                )
+            hint = (
+                "run from an elevated prompt, or allow counter access for all users in the NVIDIA "
+                "Control Panel (Desktop > Developer Settings)"
+                if os.name == "nt"
+                else "see NVIDIA's ERR_NVGPUCTRPERM guidance for enabling non-root profiling"
+            )
+            raise ProfilerUnavailable(
+                f"{self.ncu_cmd} wrote no report to {output_file}, which normally means it was "
+                f"denied access to the GPU performance counters: {hint}."
+            )
+        # Explicit encoding: ncu writes UTF-8, and the locale codec must not get near it.
+        text = output_file.read_text(encoding="utf-8", errors="replace")
         trace_data[output_file.name] = text
 
         return trace_data

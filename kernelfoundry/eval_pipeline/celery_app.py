@@ -16,24 +16,16 @@ Environment variables:
     - QUEUE_BACKEND_DB_NAME: Postgres database name (default: queue_metadata)
 """
 
-import sys
 import os
+from pathlib import Path
 
-if "autoroot" not in sys.modules:
-    from pyrootutils import setup_root
+from dotenv import load_dotenv
 
-    root = setup_root(
-        search_from=os.getcwd(),
-        indicator=".project-root",
-        project_root_env_var=True,
-        dotenv=True,
-        pythonpath=True,
-        cwd=False,
-    )
-    sys.path.insert(0, f"{root}/kernelfoundry")
+# Loads broker/backend credentials from a .env file at the repository root. A no-op when there is
+# no .env (e.g. an installed worker with credentials set directly in the environment).
+load_dotenv(os.environ.get("KERNELFOUNDRY_ENV_FILE", Path.cwd() / ".env"))
 
 from celery import Celery
-import os
 
 RABBITMQ_IP = os.environ.get("RABBITMQ_IP", "localhost")
 RABBITMQ_USERNAME = os.environ.get("RABBITMQ_USERNAME", "guest")

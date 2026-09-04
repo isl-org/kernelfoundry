@@ -13,6 +13,7 @@ permissions:
   id-token: write
   pages: write
 
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -106,7 +107,6 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
 
   deploy-pages:
-    if: github.event_name == 'workflow_dispatch'
     needs: release
     uses: ./.github/workflows/deploy-pages.yml
     secrets: inherit

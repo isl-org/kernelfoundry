@@ -79,10 +79,18 @@ def _build_image(task: Task) -> dict[str, dict[str, BuildResult]]:
         try:
             tic = time.time()
             if dockerfile_path.exists():
+                logging.info(
+                    f"[Build Image] Building custom image from {dockerfile_path} "
+                    f"(timeout={environment_build_timeout}s)..."
+                )
                 image, result, result_msg = container_runtime.build_image(
                     environment_path=dockerfile_path.parent, timeout=environment_build_timeout
                 )
             else:
+                logging.info(
+                    f"[Build Image] No Dockerfile found; fetching/building default image for "
+                    f"language={language} gpu_arch={gpu_arch} (timeout={environment_build_timeout}s)..."
+                )
                 image, result, result_msg = container_runtime.get_default_image(
                     language=language, gpu_arch=gpu_arch, timeout=environment_build_timeout
                 )

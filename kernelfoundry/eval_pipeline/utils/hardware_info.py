@@ -57,6 +57,34 @@ class HardwareInfo:
 
 # The key is either the cpu name or the gpu pci device name
 hardware_info = {
+    "Intel Corporation Panther Lake [Intel Graphics] (rev 04)": HardwareInfo(
+        hardware_id="Intel Corporation Panther Lake [Intel Graphics] (rev 04)",
+        specs_dict=GPU_SPEC_INFO_BY_CPU_NAME["Genuine Intel(R) 0000"],
+        roofs=HardwareRoofs(
+            GPU_MEMORY_BYTE_READ=153.6,  # from datasheet 9600 MT/s, 2 channels, DDR5=64bit: 9600 MT/s * 64bit * 2ch / 8 = 153.6 GB/s
+            GPU_MEMORY_BYTE_WRITE=153.6,  # from datasheet
+            SLM_BYTE_READ=2208,  # estimated based on measurements
+            SLM_BYTE_WRITE=2208,  # from datasheet
+            XVE_INST_EXECUTED_ALU0_ALL=220.8,  # estimated. 2.3 GHz * 12 XeCores * 8 Vector Engines
+            XVE_INST_EXECUTED_ALU1_ALL=220.8,  # estimated
+            XVE_INST_EXECUTED_ALU2_ALL=110.4,  # estimated as half of the ALU0/1
+            XVE_INST_EXECUTED_FP16=220.8,  # estimated
+            XVE_INST_EXECUTED_FP32=220.8,  # estimated
+            XVE_INST_EXECUTED_FP64=220.8,  # estimated
+            XVE_INST_EXECUTED_INT16=220.8,  # estimated
+            XVE_INST_EXECUTED_INT32=220.8,  # estimated
+            XVE_INST_EXECUTED_INT64=220.8,  # estimated
+            XVE_INST_EXECUTED_MATH=220.8,  # estimated
+            XVE_INST_EXECUTED_XMX_BF16=110.4,  # estimated based on ALU2
+            XVE_INST_EXECUTED_XMX_FP16=110.4,  # estimated based on ALU2
+            XVE_INST_EXECUTED_XMX_INT2=110.4,  # estimated based on ALU2
+            XVE_INST_EXECUTED_XMX_INT4=110.4,  # estimated based on ALU2
+            XVE_INST_EXECUTED_XMX_INT8=110.4,  # estimated based on ALU2
+            OPS_PER_INST_FP16=64,  # factor measured with ze_peak and SIMD32
+            OPS_PER_INST_FP32=32,  # factor measured with ze_peak and SIMD32
+            OPS_PER_INST_FP64=2,  # factor measured with ze_peak and SIMD32
+        ),
+    ),
     "Intel(R) Core(TM) Ultra 7 258V": HardwareInfo(
         hardware_id="Intel(R) Core(TM) Ultra 7 258V",
         specs_dict=GPU_SPEC_INFO_BY_CPU_NAME["Intel(R) Core(TM) Ultra 7 258V"],

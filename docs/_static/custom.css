@@ -10,3 +10,29 @@ dt.sig {
     /* position: relative; */
     border-top: 2px solid color-mix(in srgb, var(--sy-c-link) 20%, transparent);
 }
+/* Light/dark image pairs.
+
+   Shibuya's theme switcher sets data-color-mode on <html> and toggles .light / .dark classes on it
+   (its own stylesheet keys off those classes). It never sets data-theme, so selectors written
+   against that attribute match nothing: the toggle appeared to do nothing to the diagrams and they
+   followed the OS setting instead, showing a light diagram on a dark page.
+
+   The class rules below are what the theme actually drives. The media queries are a fallback for
+   before the theme's script runs, or if it does not run at all -- scoped with :not() so they never
+   fight a class the script has set. */
+html.light .only-dark,
+html.dark .only-light {
+    display: none;
+}
+
+@media (prefers-color-scheme: dark) {
+    html:not(.light):not(.dark) .only-light {
+        display: none;
+    }
+}
+
+@media (prefers-color-scheme: light) {
+    html:not(.light):not(.dark) .only-dark {
+        display: none;
+    }
+}

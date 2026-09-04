@@ -51,7 +51,7 @@ class TestBase(ABC):
 
     """
 
-    def build(self, gpu_arch) -> list[str]:
+    def build(self, gpu_arch, **buildtime_params) -> list[str]:
         """Builds the kernel and returns a list of build artifacts required for running the tests.
 
         Returns:
@@ -60,7 +60,7 @@ class TestBase(ABC):
         """
         return []
 
-    def build_reference(self, gpu_arch) -> list[str]:
+    def build_reference(self, gpu_arch, **buildtime_params) -> list[str]:
         """Builds the reference code and returns a list of build artifacts required for running the tests.
 
         Returns:
@@ -100,7 +100,7 @@ class TestBase(ABC):
         Returns:
             list[str]: List of paths to the compiled extensions.
         """
-        from kernelfoundry.compiler import IcpxCompiler, TorchCompiler
+        from kernelfoundry.compiler import IcpxCompiler, TorchCompiler, find_built_extension
 
         assert gpu_arch, "gpu_arch must be specified"
         assert backend in ["icpx", "torch"], f"Unsupported backend: {backend}"
@@ -119,10 +119,20 @@ class TestBase(ABC):
             )
             status = compiler.compile()
             if status["returncode"] != 0:
-                raise RuntimeError(f"Compilation failed: {status['stdout']}\n{status['stderr']}")
+                if status.get("phase") == "load":
+                    summary = (
+                        f"Compilation succeeded but the built extension '{extension_name}' could not be "
+                        f"imported. The compiler and linker reported no errors; the module itself would "
+                        f"not load. A missing PyInit_{extension_name} usually means the sources built "
+                        f"nothing that registers the module -- an empty or unreplaced EVOLVE block, for "
+                        f"instance -- rather than a toolchain fault."
+                    )
+                else:
+                    summary = f"Compilation failed for extension '{extension_name}'"
+                raise RuntimeError(f"{summary}: {status['stdout']}\n{status['stderr']}")
 
-            # copy the extension to the output directory
-            extension_path = Path(build_dir) / f"{extension_name}.so"
+            # copy the extension to the output directory. The suffix is .so on Linux, .pyd on Windows.
+            extension_path = find_built_extension(build_dir, extension_name)
             Path(output_dir).mkdir(parents=True, exist_ok=True)
             shutil.copy(extension_path, output_dir)
         return [(Path(output_dir) / extension_path.name).as_posix()]
@@ -135,11 +145,11 @@ class TestBase(ABC):
             str: GPU architecture string.
         """
         arch = None
-        from kernelfoundry.eval_pipeline.utils.sysinfo import discover_intel_gpus, get_nvidia_compute_capabilities
+        from kernelfoundry.eval_pipeline.utils.sysinfo import get_nvidia_compute_capabilities, select_intel_gpu
 
-        intel_gpus = discover_intel_gpus()
-        if intel_gpus:
-            _, device_id, _ = intel_gpus[0]
+        intel_gpu = select_intel_gpu()
+        if intel_gpu is not None:
+            _, device_id, _ = intel_gpu
             arch = device_id
         else:
             nvidia_caps = get_nvidia_compute_capabilities()
@@ -151,4 +161,10 @@ class TestBase(ABC):
 
     @staticmethod
     def validate():
+        """Hook for task-specific validation of the task definition.
+
+        Override in a subclass to assert anything that must hold before a job starts -- for
+        example that required data files are present, or that a build script is executable.
+        The default implementation does nothing.
+        """
         pass

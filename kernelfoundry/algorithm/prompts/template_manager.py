@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import random
 import re
+import warnings
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -14,6 +15,7 @@ from jinja2 import Environment, PackageLoader, select_autoescape
 from kernelfoundry.algorithm.schemas import Program
 from kernelfoundry.eval_pipeline.utils.gpu_specs import ARCH_TO_NAME, ARCH_TO_SPECS
 from kernelfoundry.algorithm.prompts.languages import KERNEL_OPTIMIZATION_TIPS
+from kernelfoundry.eval_pipeline.utils.custom_task_helper import blocks_to_str
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +40,9 @@ class TemplateManager:
         include_inspirations: bool = True,
         use_hardware_prompt: bool = True,
         allow_templated: bool = False,
+        mcp_prompt_list: Optional[List[str]] = None,
         template_example: Optional[str] = None,
-        prompt_template_fn: str = "main_prompt.j2",
+        prompt_template_fn: str | None = None,
     ):
         """
         Initialize the template manager.
@@ -53,6 +56,7 @@ class TemplateManager:
             include_inspirations: Whether to include inspiration programs
             use_hardware_prompt: Whether to include hardware specs
             allow_templated: Whether to allow templated kernels
+            mcp_prompt_list: Optional MCP-specific prompt guidance lines
             template_example: Example of templated kernel format
             output_dir: Directory for saving evolution database (optional)
             llm_server: LLM server for mutation operations (optional)
@@ -66,13 +70,15 @@ class TemplateManager:
         self.include_top = include_top
         self.include_inspirations = include_inspirations
         self.use_hardware_prompt = use_hardware_prompt
+        self.prompt_template_fn = prompt_template_fn or "main_prompt.j2"
+        self.mcp_prompt_list = mcp_prompt_list or []
 
         # if allowing templated kernels or just standard optimization strategies
         self.allow_templated = allow_templated
         self.template_example = template_example
 
         env = Environment(loader=PackageLoader("kernelfoundry.algorithm.prompts"), autoescape=select_autoescape())
-        self.prompt_template = env.get_template(prompt_template_fn)
+        self.prompt_template = env.get_template(self.prompt_template_fn)
 
     def construct_prompt(
         self,
@@ -126,7 +132,7 @@ class TemplateManager:
 
         user_instructions = ""
         if last_program and last_program.task:
-            user_instructions = "\n".join(last_program.task.blocks.get("USER_INSTRUCTIONS", {}).values())
+            user_instructions = blocks_to_str(last_program.task.blocks.get("USER_INSTRUCTIONS", {}))
 
         # Get evolvable content (from parameter or stored state)
         evolved = evolvable_content or getattr(self, "_evolvable_content", {}) or {}
@@ -172,6 +178,7 @@ class TemplateManager:
             evolved_common_pitfalls=evolved.get("common_pitfalls"),
             evolved_analysis_guidance=evolved.get("analysis_guidance"),
             function_name=function_name,
+            mcp_prompt_list=self.mcp_prompt_list,
         )
         # remove empty lines
         filled_template = re.sub(r"\n\s*\n+", "\n\n", filled_template)
@@ -193,18 +200,27 @@ class TemplateManager:
         gpu_arch_list = self.gpu_arch.split(",")
         hw_prompt_part = ""
         for arch in gpu_arch_list:
-            assert arch in ARCH_TO_NAME, f"Unknown architecture gpu_arch: {arch}"
+            if arch not in ARCH_TO_NAME:
+                warnings.warn(
+                    f"No hardware profile for gpu_arch '{arch}'; generating without hardware-specific "
+                    f"context. Profiles exist for: {', '.join(sorted(ARCH_TO_NAME))}.",
+                    stacklevel=2,
+                )
+                hw_prompt_part += f"Specs unknown for **{arch}** architecture"
+                continue
             hw_name = ARCH_TO_NAME[arch]
             specs = ARCH_TO_SPECS[arch]
             formatted_specs = ", ".join([f"{key}: {value}" for key, value in specs.items()])
-            hw_prompt_part += f"**{hw_name}** with specs: " + formatted_specs
+            # representative devices since the architecture may be shared across multiple actual GPUs
+            hw_prompt_part += f"**{arch}** architecture, representative device **{hw_name}** with specs: "
+            hw_prompt_part += formatted_specs
         return hw_prompt_part
 
     def _program_to_dict(self, program: Program | None):
         """Convert program to dictionary"""
         if program is not None:
             program_as_dict = {
-                "code": program.code,
+                "code": program.code_as_str,
                 "result": (
                     "(Result: " + program.kernel_exec_result.format_for_prompt() + ")"
                     if program.kernel_exec_result and program.kernel_exec_result.perf_score >= 0
@@ -237,7 +253,7 @@ class TemplateManager:
         if self.include_top and top_program:
             included_versions.append(top_program)
         return any(
-            program.is_templated or "forward_templated" in program.code
+            program.is_templated or "forward_templated" in program.code_as_str
             for program in included_versions
             if program is not None and program.code is not None
         )

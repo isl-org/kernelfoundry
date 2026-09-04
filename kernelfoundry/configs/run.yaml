@@ -1,0 +1,6 @@
+# @package _global_
+# Standard (non-agentic) pipeline. All shared fields live in base.yaml; this file only
+# composes it. See run_agentic.yaml for the agentic pipeline's overrides on top of the same base.
+defaults:
+  - base
+  - _self_
