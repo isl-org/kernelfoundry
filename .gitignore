@@ -54,3 +54,7 @@ docs/api/_autosummary/
 IGC_REVISION
 NEO_REVISION
 OCL_DRIVER_VERSION
+
+# Results
+results/
+.kernelfoundry/

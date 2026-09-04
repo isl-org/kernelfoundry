@@ -1,0 +1,36 @@
+# Build context for docker/Dockerfile, which copies this checkout into the image.
+
+# Never bake credentials into an image layer.
+.env
+
+# In a submodule checkout .git is a file containing a gitdir: pointer, which would land in
+# the image as a dangling reference and break any git command run inside it.
+.git
+.gitignore
+.github
+
+# Local results and caches, which would also invalidate the copy layer on every run.
+runs/
+results/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build and packaging artifacts.
+build/
+dist/
+*.egg-info/
+*.egg
+docs/_build/
+
+# Virtual environments, which are large and would be wrong inside the image anyway.
+.venv/
+venv/
+ENV/
+env/
+
+.vscode/
+.idea/
+.DS_Store

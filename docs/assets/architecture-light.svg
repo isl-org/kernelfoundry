@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 560" width="860" height="560" role="img" aria-label="KernelFoundry workflow. The kernel you want faster goes to a coding agent, for example Copilot or Claude Code, which isolates it and writes tests to produce a task package of reference, tests, EVOLVE block and config; you can also author that package yourself. The task package enters an optimization loop, driven either by (A) the evaluation tool in a modify and test cycle or (B) the evolution agent searching autonomously. The loop generates, compiles, benchmarks on a real GPU and profiles candidates, feeding test results, runtime stats and profiler feedback back into generation, and emits an optimized kernel to integrate back into your code.">
+  <defs>
+    <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0.5 L 7.5 4 L 0 7.5 z" fill="#6e7781"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="860" height="560" fill="#ffffff"/>
+
+  <g font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+
+    <!-- input and the coding agent -->    <rect x="40" y="20" width="200" height="52" rx="6" fill="#ffffff" stroke="#d0d7de"/>
+    <text x="140" y="42" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">Input</text>
+    <text x="140" y="59" text-anchor="middle" font-size="11" fill="#57606a">kernel to optimize</text>
+    <rect x="300" y="20" width="260" height="52" rx="6" fill="#fbf0ff" stroke="#c297ff"/>
+    <text x="430" y="42" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">Coding agent</text>
+    <text x="430" y="59" text-anchor="middle" font-size="11" fill="#57606a">Copilot · Claude Code · Cursor</text>
+    <path d="M 240 46 H 294" fill="none" stroke="#6e7781" stroke-width="1.4" marker-end="url(#arrow)"/>
+    <path d="M 430 72 V 134" fill="none" stroke="#6e7781" stroke-width="1.4" marker-end="url(#arrow)"/>
+    <text x="440" y="106" font-size="11" fill="#57606a">isolates the kernel, writes tests</text>
+    <path d="M 140 72 V 169 H 254" fill="none" stroke="#6e7781" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+    <text x="150" y="128" font-size="10" fill="#57606a">or author it yourself</text>
+
+    <!-- task package -->
+    <rect x="260" y="140" width="340" height="58" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+    <text x="430" y="164" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">Task package</text>
+    <text x="430" y="182" text-anchor="middle" font-size="11" fill="#57606a">reference · tests · EVOLVE block · config.yaml</text>
+    <path d="M 430 198 V 234" fill="none" stroke="#6e7781" stroke-width="1.4" marker-end="url(#arrow)"/>
+
+    <!-- optimization loop -->
+    <rect x="40" y="240" width="780" height="210" rx="10" fill="#f0f8ff" stroke="#54aeff"/>
+    <text x="56" y="262" font-size="11" font-weight="600" fill="#57606a" letter-spacing="0.4">OPTIMIZATION LOOP</text>
+
+    <rect x="60" y="274" width="330" height="48" rx="6" fill="#fff0ee" stroke="#ff8182"/>
+    <text x="225" y="296" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">(A) Evaluation tool</text>
+    <text x="225" y="312" text-anchor="middle" font-size="11" fill="#57606a">modify and test, with you in the loop</text>
+    <rect x="470" y="274" width="330" height="48" rx="6" fill="#fff8c5" stroke="#d4a72c"/>
+    <text x="635" y="296" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">(B) Evolution agent</text>
+    <text x="635" y="312" text-anchor="middle" font-size="11" fill="#57606a">autonomous search for the fastest kernel</text>
+
+    <rect x="60" y="340" width="170" height="54" rx="6" fill="#ffffff" stroke="#d0d7de"/>
+    <text x="145" y="364" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">Generate</text>
+    <text x="145" y="381" text-anchor="middle" font-size="11" fill="#57606a">coding agent · LLM API</text>
+    <rect x="250" y="340" width="170" height="54" rx="6" fill="#ffffff" stroke="#d0d7de"/>
+    <text x="335" y="364" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">Compile</text>
+    <text x="335" y="381" text-anchor="middle" font-size="11" fill="#57606a">SYCL · OpenCL · CUDA</text>
+    <rect x="440" y="340" width="170" height="54" rx="6" fill="#ffffff" stroke="#d0d7de"/>
+    <text x="525" y="364" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">Benchmark</text>
+    <text x="525" y="381" text-anchor="middle" font-size="11" fill="#57606a">real GPU</text>
+    <rect x="630" y="340" width="170" height="54" rx="6" fill="#ffffff" stroke="#d0d7de"/>
+    <text x="715" y="364" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">Profile</text>
+    <text x="715" y="381" text-anchor="middle" font-size="11" fill="#57606a">unitrace · VTune · ncu</text>
+
+    <path d="M 230 367 H 244" fill="none" stroke="#6e7781" stroke-width="1.4" marker-end="url(#arrow)"/>
+    <path d="M 420 367 H 434" fill="none" stroke="#6e7781" stroke-width="1.4" marker-end="url(#arrow)"/>
+    <path d="M 610 367 H 624" fill="none" stroke="#6e7781" stroke-width="1.4" marker-end="url(#arrow)"/>
+    <path d="M 715 394 V 418 H 145 V 396" fill="none" stroke="#6e7781" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+    <text x="430" y="437" text-anchor="middle" font-size="11" fill="#57606a">test results · runtime stats · profiler feedback</text>
+
+    <!-- output -->
+    <path d="M 430 450 V 484" fill="none" stroke="#6e7781" stroke-width="1.4" marker-end="url(#arrow)"/>
+    <rect x="280" y="490" width="300" height="54" rx="6" fill="#dafbe1" stroke="#4ac26b"/>
+    <text x="430" y="514" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">Optimized kernel</text>
+    <text x="430" y="531" text-anchor="middle" font-size="11" fill="#57606a">integrate back into your code</text>
+
+  </g>
+</svg>

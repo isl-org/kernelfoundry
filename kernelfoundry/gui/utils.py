@@ -1,11 +1,48 @@
 """Utility functions for the NiceGUI frontend, including database queries for jobs, kernels, and tasks."""
 
+import json
 from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy import desc, func, select
 
 import kernelfoundry.eval_pipeline.database as db
 from kernelfoundry.eval_pipeline.database.tables import Job, JobLog, Kernel, Task
+
+
+def normalize_runtime_stats(runtime_stats: dict, gpu_arch: Optional[str] = None) -> dict:
+    """Normalize the three legacy shapes of `Kernel.runtime_stats` into one.
+
+    The database still contains rows in each of these shapes:
+      - {gpu: {benchmark: {mean, std, speedup, ...}}}  (current format)
+      - {benchmark: {mean, std, speedup, ...}}          (missing the GPU level)
+      - {mean, std, ...}                                 (flat, single benchmark/gpu)
+
+    Returns the current, 3-level shape in all cases; `{}` if `runtime_stats` is
+    empty or unrecognized. `gpu_arch` (kernel.gpu_arch, possibly comma-separated)
+    fills in the GPU level for the two older shapes; falls back to "unknown".
+    """
+    if not runtime_stats:
+        return {}
+
+    gpu = gpu_arch.split(",")[0] if gpu_arch else "unknown"
+
+    # Flat format: the top-level dict is itself a single metrics dict.
+    if "mean" in runtime_stats or "speedup" in runtime_stats:
+        return {gpu: {"test1": runtime_stats}}
+
+    first_value = next(iter(runtime_stats.values()), None)
+    assert isinstance(first_value, dict), "Expected runtime stats entry"
+    if not first_value:
+        # Already 3-level, just with no benchmarks recorded for that GPU yet.
+        return runtime_stats
+
+    inner_value = next(iter(first_value.values()))
+    if isinstance(inner_value, dict):
+        # Already 3-level: {gpu: {benchmark: {metrics}}}.
+        return runtime_stats
+
+    # 2-level format: {benchmark: {metrics}} - missing the GPU level.
+    return {gpu: runtime_stats}
 
 
 def _get_job_sort_column(sort_by: Optional[str]):
@@ -125,6 +162,9 @@ def cancel_job_by_id(job_id: int, requesting_username: str | None = None) -> boo
             if job.status == "CANCELED":
                 return True
             job.status = "CANCELED"
+            if job.finished_at is None:
+                # add finished at
+                job.finished_at = datetime.now(timezone.utc)
             session.commit()
             return True
     except Exception as e:
@@ -167,6 +207,9 @@ def get_kernels_by_op_and_run(op: str, name: str, user_id: Optional[str] = None)
         Kernel.eval_log,
         Kernel.parent_uuid,
         Kernel.timestamp,
+        Kernel.runtime_stats,
+        Kernel.agent_session_id,
+        Kernel.gpu_arch,
     ).where(Kernel.task_name == op, Kernel.job_name == name)
 
     # Optional user filter for backwards compatibility.
@@ -217,7 +260,10 @@ def get_kernels_by_job_id(job_id: int):
         Kernel.timestamp,
         Kernel.score,
         Kernel.improve_over_native,
+        Kernel.runtime_stats,
         Kernel.output_code,
+        Kernel.agent_session_id,
+        Kernel.gpu_arch,
     ).where(Kernel.job_id == job_id)
 
     with db.SessionRO() as session:
@@ -228,6 +274,12 @@ def get_kernel_by_id(kernel_id: int) -> Kernel | None:
     """Retrieve a kernel by its ID."""
     with db.SessionRO() as session:
         return session.get(Kernel, kernel_id)
+
+
+def get_job_by_id(job_id: int) -> Job | None:
+    """Retrieve a job by its ID."""
+    with db.SessionRO() as session:
+        return session.get(Job, job_id)
 
 
 def get_task_by_id(task_id: str) -> Task | None:

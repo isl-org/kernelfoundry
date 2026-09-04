@@ -2,7 +2,7 @@
 
 import pytest
 
-from kernelfoundry.utils import performance
+from kernelfoundry.eval_pipeline.utils import performance
 import torch
 import time
 import random

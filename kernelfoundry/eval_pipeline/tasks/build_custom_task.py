@@ -9,14 +9,14 @@ import json
 import logging
 import time
 import traceback
-from pyrootutils import find_root
 
+from kernelfoundry import PACKAGE_ROOT
 from kernelfoundry.eval_pipeline.utils.tmp_dir import TemporaryDirectory
 from kernelfoundry.eval_pipeline.task import Task, ProcessResult, BuildResult
 from kernelfoundry.eval_pipeline.utils.memory_file_map import MemoryFileMap
 from kernelfoundry.eval_pipeline.utils.subprocess import robust_subprocess_run
 from kernelfoundry.eval_pipeline.utils.env_helper import safe_copy_env
-from kernelfoundry.eval_pipeline.utils.container import get_container_runtime
+from kernelfoundry.eval_pipeline.utils.container import get_container_runtime, select_container_image
 
 from kernelfoundry.eval_pipeline.utils.sysinfo import get_worker_info
 
@@ -54,9 +54,7 @@ def _build_custom_task(task: Task) -> Task:
     container_image = task.config.get("container_image")
     if use_container:
         if isinstance(container_image, dict):
-            container_image = container_image.get(language, {}).get(gpu_arch) or container_image.get(language, {}).get(
-                "all"
-            )
+            container_image = select_container_image(container_image, language, gpu_arch)
         elif isinstance(container_image, str):
             pass  # nothing to do here
         if container_image is None:
@@ -70,10 +68,11 @@ def _build_custom_task(task: Task) -> Task:
             task.build_result = build_result
             return task
 
-    kf_root = find_root(search_from=__file__, indicator=".project-root")
     env = safe_copy_env(
         add_vars={"KERNELFOUNDRY_BUILD": "1"},
-        extend_pythonpath=["/kernelfoundry", "/kernelfoundry/kernelfoundry"] if use_container else [kf_root],
+        extend_pythonpath=(
+            ["/kernelfoundry", "/kernelfoundry/kernelfoundry"] if use_container else [PACKAGE_ROOT.parent]
+        ),
         src={} if use_container else None,  # if using container, start with a clean env
     )
 
@@ -85,6 +84,7 @@ def _build_custom_task(task: Task) -> Task:
 
         inputs = {
             "gpu_arch": task.config.get("gpu_arch"),
+            "hyperparameters": task.hyperparameters,
         }
         config_json_path = Path(task_dir) / "input.json"
 
@@ -125,9 +125,7 @@ def _build_custom_task(task: Task) -> Task:
             logging.info(f"Image setup took {toc - tic:.2f} seconds")
 
             workspace_dir = Path("/workspace")
-            container_run_args = image.default_run_args(
-                workdir=workspace_dir / "task_data", workspace_dir=task_dir, kernelfoundry_dir=kf_root
-            )
+            container_run_args = image.default_run_args(workdir=workspace_dir / "task_data", workspace_dir=task_dir)
 
             # Get the worker info from inside the container
             cmd = [
@@ -251,9 +249,11 @@ def _build_custom_task(task: Task) -> Task:
                     else:
                         full_path = task_data_dir / file_path
                     if full_path.exists():
+                        st = full_path.stat()
                         with open(full_path, "rb") as f:
                             relative_path = Path(file_path).relative_to(workspace_task_data_dir).as_posix()
                             file_map[relative_path] = f.read()
+                            file_map.meta_map[relative_path] = {"mode": st.st_mode & 0o777, "mtime": st.st_mtime}
                 current_build_result.artifacts = file_map
                 current_build_result.result.message = "Build completed successfully"
 

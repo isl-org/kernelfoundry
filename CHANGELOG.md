@@ -2,17 +2,6 @@
 
 <!-- version list -->
 
-## v0.3.0 (2026-07-02)
-
-### Features
-
-- Add algorithm code, gui and mcp server ([#9](https://github.com/isl-org/kernelfoundry/pull/9),
-  [`650918e`](https://github.com/isl-org/kernelfoundry/commit/650918ecdffee4cf366fdab392fcb64ccd29ed17))
-
-- Update release ([#10](https://github.com/isl-org/kernelfoundry/pull/10),
-  [`dadd066`](https://github.com/isl-org/kernelfoundry/commit/dadd066e1613d9b9fafea09bca7bd015c4951dd1))
-
-
 ## v0.2.0 (2026-05-11)
 
 ### Features

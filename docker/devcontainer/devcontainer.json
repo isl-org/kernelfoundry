@@ -1,0 +1,92 @@
+// KernelFoundry devcontainer.
+//
+// Copy the whole docker/devcontainer folder into the workspace that holds your tasks and
+// rename it to .devcontainer:
+//
+//   my-kernels/
+//   |-- .devcontainer/          <- this folder
+//   |-- matmul_task/
+//   |-- attention_task/
+//   `-- runs/                   <- created on the first run, shared by all your tasks
+//
+// Open the workspace in VSCode and run "Dev Containers: Reopen in Container".
+//
+// If the container comes up without a GPU, the render group id below is wrong for this
+// machine. Run "stat -c %g /dev/dri/renderD128" on the host and put that number in the
+// --group-add line, then rebuild the container. See that line for why it cannot be baked
+// into the image.
+{
+    "name": "KernelFoundry",
+    // To build it yourself instead, comment out the line below and uncomment the two after
+    // it. Docker fetches the repository as the build context, so no checkout is needed;
+    // change the #main fragment to a tag such as #v0.3.0 for a specific release, and expect
+    // a long first build. The array form of initializeCommand works from any host shell,
+    // including PowerShell. A proxy in ~/.docker/config.json is picked up by that build on
+    // its own, but one that lives only in your shell is not, in which case run the same
+    // docker build by hand first and reopen: VS Code then finds the image already there.
+    "image": "ghcr.io/isl-org/kernelfoundry:latest",
+    // "initializeCommand": ["docker", "build", "-f", "docker/Dockerfile", "-t", "kernelfoundry:local", "https://github.com/isl-org/kernelfoundry.git#main"],
+    // "image": "kernelfoundry:local",
+    "runArgs": [
+        // The Intel GPU. Container creation fails on a machine without /dev/dri.
+        "--device=/dev/dri",
+        // The render node is owned by a group whose id differs per machine, and the
+        // container has to carry that id numerically. A group name cannot be used here.
+        // Replace the 992 with your own id from "stat -c %g /dev/dri/renderD128", or leave 
+        // it and set KF_RENDER_GID on the host instead. If it is wrong the container still 
+        // starts, just without a GPU, and postCreateCommand prints the number to use.
+        "--group-add=${localEnv:KF_RENDER_GID:992}",
+        "--shm-size=1g",
+        "--init"
+    ],
+    // Share the host trust store with the container; set KF_CA_BUNDLE on the host if needed.
+    "mounts": [
+        "source=${localEnv:KF_CA_BUNDLE:/etc/ssl/certs/ca-certificates.crt},target=/etc/ssl/certs/ca-certificates.crt,type=bind,readonly"
+    ],
+    // A variable that the host does not define would arrive as an empty string, which is
+    // not the same as being absent: an empty OPENAI_BASE_URL replaces the vendor endpoint
+    // with nothing, and an empty USER hides the image default. Each one therefore falls
+    // back to the __KF_UNSET__ sentinel, which the container's shell startup turns back
+    // into an unset variable.
+    "containerEnv": {
+        // Jobs are tagged with this name in the database and the UI.
+        "USER": "${localEnv:USER:__KF_UNSET__}",
+        "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY:__KF_UNSET__}",
+        "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY:__KF_UNSET__}",
+        // Set these on the host to reach a gateway instead of the vendor endpoint. Leaving
+        // them unset keeps api.openai.com and api.anthropic.com.
+        "OPENAI_BASE_URL": "${localEnv:OPENAI_BASE_URL:__KF_UNSET__}",
+        "ANTHROPIC_BASE_URL": "${localEnv:ANTHROPIC_BASE_URL:__KF_UNSET__}",
+        "http_proxy": "${localEnv:http_proxy:__KF_UNSET__}",
+        "https_proxy": "${localEnv:https_proxy:__KF_UNSET__}",
+        "no_proxy": "${localEnv:no_proxy:__KF_UNSET__}",
+        "HTTP_PROXY": "${localEnv:HTTP_PROXY:__KF_UNSET__}",
+        "HTTPS_PROXY": "${localEnv:HTTPS_PROXY:__KF_UNSET__}",
+        "NO_PROXY": "${localEnv:NO_PROXY:__KF_UNSET__}"
+    },
+    "forwardPorts": [
+        8885
+    ],
+    "portsAttributes": {
+        "8885": {
+            "label": "KernelFoundry UI"
+        }
+    },
+    "postCreateCommand": "bash /opt/kernelfoundry/docker/post-create.sh",
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "python.defaultInterpreterPath": "/opt/venv/bin/python",
+                "python.terminal.activateEnvironment": false
+            },
+            "extensions": [
+                "ms-python.python",
+                "ms-python.vscode-pylance"
+            ]
+        }
+    },
+    // Unprivileged, so that files created in your workspace belong to you rather than to
+    // root. VS Code renumbers this user to match your host uid and gid on first create.
+    // The virtualenv under /opt stays root-owned; use sudo to install extra packages.
+    "remoteUser": "ubuntu"
+}

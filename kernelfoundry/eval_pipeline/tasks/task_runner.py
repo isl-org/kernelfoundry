@@ -10,6 +10,9 @@ from kernelfoundry.eval_pipeline.tasks.pull_image import pull_image
 from kernelfoundry.eval_pipeline.tasks.test_custom_task import test_custom_task
 from kernelfoundry.eval_pipeline.tasks.test_sleep import test_sleep
 from kernelfoundry.eval_pipeline.task import Task, BuildResult, ProcessResult, TestResult
+from kernelfoundry.eval_pipeline.utils.container import select_container_image
+from kernelfoundry.eval_pipeline.utils.gpu_specs import ARCH_TO_SPECS, ARCH_TO_PCI_DEVICE_IDS
+from kernelfoundry.eval_pipeline.utils.sysinfo import discover_intel_gpus
 
 import logging
 import threading
@@ -27,7 +30,7 @@ class TaskRunner:
     _local_test_lock = threading.Lock()
 
     @classmethod
-    def init(cls, use_queue: bool = False):
+    def init(cls, use_queue: bool = False, gpu_arch=None):
         if use_queue:
             from kernelfoundry.eval_pipeline.celery_app import celery_app
             from celery.exceptions import TimeoutError
@@ -35,6 +38,44 @@ class TaskRunner:
             cls.app = celery_app
         else:
             cls.app = None
+
+        if gpu_arch is None:
+            return
+
+        archs = gpu_arch if isinstance(gpu_arch, (list, tuple)) else str(gpu_arch).split(",")
+        archs = [a.strip() for a in archs]
+
+        # assert that arch is known and has a corresponding entry in specs dict
+        for arch in archs:
+            assert (
+                arch in ARCH_TO_SPECS
+            ), f"Unknown gpu_arch {arch!r}: no entry in ARCH_TO_SPECS. Available: {ARCH_TO_SPECS.keys()}"
+
+        # check whether a worker is listening to the gpu_arch queue
+        if use_queue:
+            active_queues = {
+                q["name"]
+                for worker_queues in (cls.app.control.inspect(timeout=5.0).active_queues() or {}).values()
+                for q in worker_queues
+            }
+            for arch in archs:
+                queue = f"test_custom_task_{arch}"
+                assert queue in active_queues, (
+                    f"No worker is currently listening on queue {queue!r} for gpu_arch={arch!r}. "
+                    f"Active queues: {sorted(active_queues) or '(none)'}"
+                )
+        # check if the local gpu corresponds to the specified gpu_arch (only for Intel GPUs)
+        else:
+            detected_ids = {device_id.lower() for _, device_id, _ in discover_intel_gpus()}
+            if detected_ids:
+                for arch in archs:
+                    valid_ids = ARCH_TO_PCI_DEVICE_IDS.get(arch)
+                    if valid_ids is None:
+                        continue  # not a known Intel arch (e.g. a CUDA arch); nothing to check locally
+                    assert detected_ids & set(valid_ids), (
+                        f"Specified gpu_arch={arch!r} does not match any GPU installed on this "
+                        f"machine (detected PCI device ids: {sorted(detected_ids)})"
+                    )
 
     @classmethod
     def build_custom_task(cls, task: Task) -> Task:
@@ -65,9 +106,7 @@ class TaskRunner:
             # Make sure to pull the image before testing to avoid doing it inside the test task which would cause timeouts
             container_image = task.config.get("container_image")
             if isinstance(container_image, dict):
-                container_image = container_image.get(language, {}).get(gpu_arch) or container_image.get(
-                    language, {}
-                ).get("all")
+                container_image = select_container_image(container_image, language, gpu_arch)
             elif isinstance(container_image, str):
                 pass  # nothing to do here
             if container_image is None:
@@ -78,7 +117,7 @@ class TaskRunner:
                 registry=task.config.get("paths", {}).get("container_registry"),
                 allowed_container_registries=task.config.get("paths", {}).get("allowed_container_registries"),
                 queue=queue_override if queue_override else queue,
-                timeout=timeout,
+                timeout=task.config.get("environment_pull_timeout") or 3600,
             )
             if image_id is None:
                 raise RuntimeError(
@@ -223,9 +262,7 @@ class TaskRunner:
             # Make sure to pull the image before testing to avoid doing it inside the test task which would cause timeouts
             container_image = task.config.get("container_image")
             if isinstance(container_image, dict):
-                container_image = container_image.get(language, {}).get(gpu_arch) or container_image.get(
-                    language, {}
-                ).get("all")
+                container_image = select_container_image(container_image, language, gpu_arch)
             elif isinstance(container_image, str):
                 pass  # nothing to do here
             if container_image is None:
@@ -236,7 +273,7 @@ class TaskRunner:
                 registry=task.config.get("paths", {}).get("container_registry"),
                 allowed_container_registries=task.config.get("paths", {}).get("allowed_container_registries"),
                 queue=queue_override if queue_override else queue,
-                timeout=timeout,
+                timeout=task.config.get("environment_pull_timeout") or 3600,
             )
             if image_id is None:
                 raise RuntimeError(

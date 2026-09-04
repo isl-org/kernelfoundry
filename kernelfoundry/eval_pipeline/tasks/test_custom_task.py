@@ -14,15 +14,16 @@ import logging
 import json
 import traceback
 import time
-from pyrootutils import find_root
 
+from kernelfoundry import PACKAGE_ROOT
 from kernelfoundry.eval_pipeline.utils.tmp_dir import TemporaryDirectory
 from kernelfoundry.eval_pipeline.task import Task, ProcessResult, TestResult
-from kernelfoundry.eval_pipeline.profiler_command import get_profilers
+from kernelfoundry.eval_pipeline.utils.custom_task_helper import blocks_to_str
+from kernelfoundry.eval_pipeline.profiler_command import ProfilerUnavailable, get_profilers
 from kernelfoundry.eval_pipeline.utils.extract_template_parameters import find_template_parameters
 from kernelfoundry.eval_pipeline.utils.subprocess import robust_subprocess_run
 from kernelfoundry.eval_pipeline.utils.env_helper import safe_copy_env
-from kernelfoundry.eval_pipeline.utils.container import get_container_runtime
+from kernelfoundry.eval_pipeline.utils.container import get_container_runtime, select_container_image
 
 from kernelfoundry.eval_pipeline.utils.sysinfo import get_worker_info
 
@@ -67,9 +68,7 @@ def _test_custom_task(task: Task) -> dict[str, TestResult]:
     container_image = task.config.get("container_image")
     if use_container:
         if isinstance(container_image, dict):
-            container_image = container_image.get(language, {}).get(gpu_arch) or container_image.get(language, {}).get(
-                "all"
-            )
+            container_image = select_container_image(container_image, language, gpu_arch)
         elif isinstance(container_image, str):
             pass  # nothing to do here
         if container_image is None:
@@ -85,7 +84,7 @@ def _test_custom_task(task: Task) -> dict[str, TestResult]:
             return ans
 
     # Extract template parameters
-    code = " ".join(list(task.blocks["EVOLVE"].values()))
+    code = blocks_to_str(task.blocks["EVOLVE"])
     template_parameters = find_template_parameters(code)
 
     logging.info(f"[Test Custom Task]")
@@ -107,10 +106,12 @@ def _test_custom_task(task: Task) -> dict[str, TestResult]:
     if test_reference and task.test_result_reference is None:
         option_variants.append(("reference", ["--ref"]))
 
-    kf_root = find_root(search_from=__file__, indicator=".project-root")
+    runtime_params = (task.hyperparameters or {}).get("runtime") or {}
+    runtime_args = [f"--runtime_params={json.dumps(runtime_params)}"] if runtime_params else []
+
     env = safe_copy_env(
         add_vars={"KERNELFOUNDRY_TEST": "1"},
-        extend_pythonpath=["/kernelfoundry"] if use_container else [kf_root],
+        extend_pythonpath=["/kernelfoundry"] if use_container else [PACKAGE_ROOT.parent],
         src={} if use_container else None,  # if using container, start with a clean env
     )
 
@@ -154,7 +155,7 @@ def _test_custom_task(task: Task) -> dict[str, TestResult]:
                     returncode=-1,
                     stdout="",
                     stderr="",
-                    message=f"Failed to find a suitable container image: {result_msg}",
+                    message="Failed to find a suitable container image",
                 )
                 test_result.worker_info = worker_info
                 ans["container"] = test_result
@@ -223,6 +224,7 @@ def _test_custom_task(task: Task) -> dict[str, TestResult]:
                         "not performance",
                     ]
                     + options
+                    + runtime_args
                     + ["task.py"]
                 )
 
@@ -283,6 +285,7 @@ def _test_custom_task(task: Task) -> dict[str, TestResult]:
                         f"--performance-out={profile_output_file.as_posix()}",
                     ]
                     + options
+                    + runtime_args
                     + [
                         "task.py",
                     ]
@@ -412,6 +415,10 @@ def _test_custom_task(task: Task) -> dict[str, TestResult]:
                         # recreate the profiler object with the directory on the host
                         profiler = profiler_class(profiler_output_dir)
                         test_result.trace_results[profiler_name].output_data = profiler.read_output()
+                    except ProfilerUnavailable as e:
+                        logging.error("Profiler '%s' produced no data: %s", profiler_name, e)
+                        test_result.trace_results[profiler_name].output_data = {}
+                        test_result.trace_results[profiler_name].message = f"Failed to read {profiler_name} output: {e}"
                     except Exception as e:
                         test_result.trace_results[profiler_name].output_data = {}
                         test_result.trace_results[profiler_name].message = (
@@ -428,4 +435,36 @@ def _test_custom_task(task: Task) -> dict[str, TestResult]:
 
             ans[key] = test_result
 
+    _log_outcome_summary(ans)
     return ans
+
+
+def _log_outcome_summary(results: dict[str, TestResult]) -> None:
+    """State each variant's outcome as the last thing the run prints.
+
+    The reference is exercised after the candidate, so a run where the custom kernel failed
+    would still have PASSED as the last line if the reference passed. This prints a summary of all variants at the end.
+    """
+    logging.info("=" * 62)
+    logging.info("[Test Custom Task] Outcome by variant:")
+    for key, test_result in results.items():
+        correctness = test_result.correctness_result
+        if correctness is None:
+            verdict = "NOT RUN"
+        elif correctness.returncode == 0:
+            verdict = "PASSED"
+        else:
+            verdict = f"FAILED (exit {correctness.returncode})"
+        logging.info("  %-28s %s", key, verdict)
+
+    failed = [
+        k for k, r in results.items() if r.correctness_result is not None and r.correctness_result.returncode != 0
+    ]
+    if failed:
+        # Say it once more in the plainest terms available, because this is the line a log tail shows.
+        logging.info(
+            "[Test Custom Task] RESULT: %d of %d variant(s) failed: %s", len(failed), len(results), ", ".join(failed)
+        )
+    else:
+        logging.info("[Test Custom Task] RESULT: all %d variant(s) passed", len(results))
+    logging.info("=" * 62)

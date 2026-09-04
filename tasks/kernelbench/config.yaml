@@ -14,5 +14,7 @@ has_reference_build_step: false # In KernelBench all references are pytorch code
 hyperparameters:
   # build-time parameters are passed to the build function in task.py
   buildtime: null
-  # runtime parameters are passed to pytest and are available through the fixture hyperparams
+  # runtime parameters are passed to pytest as --runtime_params, JSON-encoded. Read them in a
+  # test with request.config.getoption("--runtime_params"), or with
+  # kernelfoundry.conftest.get_runtime_params_from_argv() outside a fixture
   runtime: null

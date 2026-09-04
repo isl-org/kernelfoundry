@@ -1,14 +1,20 @@
 """Database initialization, utility functions and table definitions."""
 
-from sqlalchemy import create_engine as _create_engine
+from sqlalchemy import create_engine as _create_engine, inspect as _inspect, text as _text
 from sqlalchemy.orm import sessionmaker as _sessionmaker
 from kernelfoundry.eval_pipeline.database.tables import Base, Kernel, Task, Job, JobLog, Rag
 import os
 import sys
 from urllib.parse import quote_plus
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
+
+#: Statuses meaning the job is over. Reaching one implies a ``finished_at``; see update_job_status.
+TERMINAL_JOB_STATUSES = ("COMPLETE", "FAIL", "CANCELED", "VALIDATED")
+#: Statuses meaning the job is running right now.
+ACTIVE_JOB_STATUSES = ("INIT", "RUN", "VALIDATING")
+JOB_STATUSES = ACTIVE_JOB_STATUSES + TERMINAL_JOB_STATUSES
 
 __all__ = [
     "init",
@@ -16,6 +22,7 @@ __all__ = [
     "add_job",
     "update_job_status",
     "update_job_progress",
+    "update_job_token_usage",
     "add_job_log",
     "add_job_log_batch",
     "Kernel",
@@ -112,6 +119,33 @@ def _init_postgresql():
     SessionInsert = _sessionmaker(engine_insert)
 
 
+def _check_sqlite_schema(engine, url: str) -> None:
+    """Fail loudly if an existing SQLite file predates the current schema.
+
+    ``create_all`` only creates tables that don't exist yet; it never adds columns to ones
+    that do, so an older database file otherwise causes a ``no such column`` error.
+    """
+    inspector = _inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    for table in Base.metadata.sorted_tables:
+        existing_columns = (
+            {col["name"] for col in inspector.get_columns(table.name)} if table.name in existing_tables else set()
+        )
+        missing = [col.name for col in table.columns if col.name not in existing_columns]
+        if missing:
+            what = (
+                f"table '{table.name}'"
+                if table.name not in existing_tables
+                else f"columns {missing} in table '{table.name}'"
+            )
+            raise RuntimeError(
+                f"The SQLite database at {url!r} is missing {what}. It was likely created by an "
+                "older version of KernelFoundry. Move or delete the file (or point "
+                "paths.kernels_db_path at a new location) so "
+                "KernelFoundry can create a fresh database with the current schema."
+            )
+
+
 def _init_sqlite(cfg):
     """Initialize SQLite database connection."""
     global engine_readonly, engine_insert, SessionRO, SessionInsert
@@ -131,6 +165,7 @@ def _init_sqlite(cfg):
 
     # Bootstrap schema automatically for SQLite.
     Base.metadata.create_all(engine_insert)
+    _check_sqlite_schema(engine_insert, primary_url)
 
 
 def init(cfg):
@@ -149,7 +184,8 @@ def add_ignore_errors(item):
             session.commit()
         return True
     except Exception as e:
-        if "unique constraint" in str(e) and "task" in str(e):
+        e_str = str(e).lower()
+        if "unique constraint" in e_str and "task" in e_str:
             logging.info("Info: Task already in database (not inserting it again due to unique ID constraint).")
         else:
             logging.warning(f"Could not add item to database. Error: {e}")
@@ -201,16 +237,7 @@ def update_job_status(
     Returns:
         bool: True if update was successful, False otherwise
     """
-    assert status in (
-        None,
-        "INIT",
-        "RUN",
-        "COMPLETE",
-        "FAIL",
-        "CANCELED",
-        "VALIDATING",
-        "VALIDATED",
-    ), f"Invalid status value {status}"
+    assert status is None or status in JOB_STATUSES, f"Invalid status value {status}"
     try:
         with SessionInsert() as session:
             job = session.query(Job).filter_by(id=job_id).first()
@@ -232,6 +259,9 @@ def update_job_status(
                     job.config = config
                 if progress is not None:
                     job.progress = max(0.0, min(1.0, progress))
+                if status in TERMINAL_JOB_STATUSES and job.finished_at is None:
+                    # add finished_at if the job has reached a terminal status but finished_at is not set
+                    job.finished_at = finished_at or datetime.now(timezone.utc)
                 if status == "COMPLETE" and job.finished_at is not None:
                     job.progress = 1.0
                 session.commit()
@@ -252,6 +282,39 @@ def update_job_progress(job_id: int, progress: float) -> bool:
         bool: True if update was successful, False otherwise
     """
     return update_job_status(job_id, progress=progress)
+
+
+def update_job_token_usage(
+    job_id: int,
+    input_tokens: int,
+    output_tokens: int,
+    cached_input_tokens: int = 0,
+) -> bool:
+    """Persist aggregated token usage for a job.
+
+    Args:
+        job_id (int): The ID of the job to update.
+        input_tokens (int): Aggregated prompt/input tokens (excludes cache-read tokens).
+        output_tokens (int): Aggregated completion/output tokens.
+        cached_input_tokens (int): Aggregated cache-read input tokens. Defaults to 0 for
+            providers with no caching concept.
+    Returns:
+        bool: True if update was successful, False otherwise.
+    """
+    try:
+        with SessionInsert() as session:
+            job = session.query(Job).filter_by(id=job_id).first()
+            if job is None:
+                return False
+
+            job.input_tokens = input_tokens
+            job.output_tokens = output_tokens
+            job.cached_input_tokens = cached_input_tokens
+            session.commit()
+            return True
+    except Exception as e:
+        print(f"Warning: Could not update job token usage: {e}")
+    return False
 
 
 def add_job_log(
@@ -333,7 +396,7 @@ def add_job_log_batch(logs: list[dict]) -> bool:
                     agent_session_id=log_data.get("agent_session_id"),
                     level=log_data["level"],
                     message=log_data["message"],
-                    extra=log_data.get("extra", None),
+                    extra=log_data.get("extra") or None,
                 )
                 if "timestamp" in log_data and log_data["timestamp"] is not None:
                     log_entry.timestamp = log_data["timestamp"]

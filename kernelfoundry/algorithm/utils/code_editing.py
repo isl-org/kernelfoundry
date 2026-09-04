@@ -1,25 +1,32 @@
-import ctypes.util
-import importlib.metadata
 import warnings
+from pathlib import Path
 
+import clang
 import clang.cindex
 from clang.cindex import CursorKind, Cursor
 import re
 
-# Configure libclang to use the versioned library to avoid "library not found" errors.
-# The installed library often has a version suffix (e.g. libclang-20.so.1).
-try:
-    _clang_version = importlib.metadata.version("clang")
-    _clang_major = _clang_version.split(".")[0] if "." in _clang_version else _clang_version
-    _libclang_file = ctypes.util.find_library(f"clang-{_clang_major}") or ctypes.util.find_library("clang")
-except importlib.metadata.PackageNotFoundError:
-    _libclang_file = ctypes.util.find_library("clang")
+
+def _bundled_libclang() -> str | None:
+    """Return the libclang shared library bundled by the libclang-ng package."""
+    native = Path(clang.__file__).parent / "native"
+    for name in ("libclang.dll", "libclang.so", "libclang.dylib"):
+        candidate = native / name
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+# Always use the libclang bundled by libclang-ng, never a system install: the 'clang' package's
+# cindex.py bindings are only guaranteed to match the libclang-ng build they were pinned against
+_libclang_file = _bundled_libclang()
+
 if _libclang_file:
     clang.cindex.Config.set_library_file(_libclang_file)
 else:
     warnings.warn(
-        "Could not locate libclang via ctypes.util.find_library. "
-        "clang.cindex may fail to load. Ensure libclang is installed and accessible.",
+        "Could not locate the libclang shared library bundled with the 'libclang-ng' package. "
+        "clang.cindex will fail at Index.create(). Reinstall 'libclang-ng'.",
         RuntimeWarning,
         stacklevel=1,
     )

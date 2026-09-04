@@ -1,42 +1,24 @@
 # Tasks
 
-KernelFoundry provides a standardized format for GPU kernel optimization tasks. This directory hosts example tasks and an interface to commonly used benchmarks.
+Example tasks and an interface to commonly used benchmarks.
 
-## Task definition
+| Directory | Contents |
+| --- | --- |
+| `example_custom/` | A complete SYCL matrix-multiply task. The best starting point for your own. |
+| `kernelbench/` | Template for converting a KernelBench task into KernelFoundry format. |
+| `pytorch_functionals.csv` | Reference PyTorch operations used by the KernelBench tasks. |
 
-### File structure
+**The task format is documented in the user guide, not here:**
 
-A custom task broadly consists of the following components:
-
-1.  Config file (usually config.yaml): Defines parameters such as a task ID / name, language (e.g. SYCL), number of iterations to run, etc
-2.  Task file (usually task.py): Main file that defines the kernel generation task (usually via a reference implementation, e.g., a PyTorch operation) and the tests that the kernel has to pass. 
-3.  Kernel file (usually kernel.cpp): Kernel file that the LLM will modify. Can also be almost empty in the beginning, except for the evolve-start and end markers (see below)
-4. Reference file (e.g. reference.cpp): A baseline implementation that the new kernel will be compared to. Usually provided by the user.
-
-The file `conftest.py` , which you can see in all the template tasks, must be included unchanged in every custom task. Its only function is to configure pytest to work with our testing routine.
-
-### Block structure
-
-There are three predefined markers that you can use to mark special parts of your code:
-
-1.  Evolve (\[EVOLVE\_START\] - \[EVOLVE\_END\]): 
-    1.  Defines the part that should be modified when optimizing the kernel. The KernelFoundry framework or the agent responsible for that will modify only the block between the EVOLVE tags, and leave all other code untouched.
-    2.  This part between the evolve-tags can be empty! If you want to generate a kernel from scratch, without any function header/imports / bindings given, you can simply leave this part empty.
-    3.  Having an Evolve-part somewhere in the code is compulsory!
-2.  Reference (\[REFERENCE\_START\] - \[REFERENCE\_END\]):  
-    1.  The reference is an implementation of the operation for which the kernel should be generated. For example, the reference could be Pytorch code (e.g. torch.matmul(a, b)) and the task is to write a custom kernel that is faster than the reference implementation.
-    2.  Oftentimes in our examples, the reference is used to check the correctness of the kernel implementation (comparing kernel output tensors to the reference output tensors).
-    3.  Providing a reference is optional. It is possible to guide the LLM solely via user instructions and to test the kernel in a way other than by comparison with the reference.
-3.  User instructions (\[USER\_INSTRUCTIONS\_START\] - \[USER\_INSTRUCTIONS\_END\]):
-    1.  Optionally, you can provide further instructions, based on any guidance the user has provided. 
-    2.  Examples include specific optimization strategies to try out, info about what will be tested, etc.
-
-Notes:
-
--   By default, these three blocks will be included in the prompt (if provided). Thus, the LLM considers reference implementation, the code to evolve, and user instructions when proposing a new kernel.
--   It is worth noting that these blocks can be located anywhere. KernelFoundry will search all the files you provide to find these blocks. However, it makes the most sense to have a dedicated  or kernel.sycl file with the Evolve-block.
--   Of course, including the tags in a .py or .cpp file would lead to Syntax Errors. They need to be commented out.
-
+- [Anatomy of a task package](https://isl-org.github.io/kernelfoundry/docs/guide/task-package.html)
+  covers files, the `[EVOLVE_START]` / `[REFERENCE_START]` / `[USER_INSTRUCTIONS_START]` blocks, and
+  how to create a task
+- [Writing tests](https://isl-org.github.io/kernelfoundry/docs/guide/writing-tests.html)
+  covers correctness tests and the benchmark
+- [Config parameters](https://isl-org.github.io/kernelfoundry/docs/guide/config-parameters.html)
+  documents every `config.yaml` key
+- [Quickstart](https://isl-org.github.io/kernelfoundry/docs/guide/quickstart.html)
+  runs `example_custom/` end to end without an LLM API key
 
 ## KernelBench
 

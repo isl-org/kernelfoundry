@@ -1,5 +1,6 @@
 """Interfaces and schemas for kernel Program objects and evaluation results."""
 
+import os
 import json
 import time
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from dataclasses import asdict, dataclass, field, fields
 
 from kernelfoundry.eval_pipeline.database.tables import Kernel
 from kernelfoundry.eval_pipeline.task import Task
+from kernelfoundry.eval_pipeline.utils.custom_task_helper import blocks_to_str
 
 
 class EvalResult(BaseModel):
@@ -156,7 +158,7 @@ class Program:
 
     # Program identification
     id: str
-    code: str
+    code: dict[str, list[str]] = field(default_factory=dict)
     is_program0: bool = False
     raw_llm_code: Optional[str] = None  # Original LLM output if available
     language: str = "python"
@@ -187,6 +189,11 @@ class Program:
 
     task: Task | None = None
 
+    @property
+    def code_as_str(self) -> str:
+        """Flattened string of all code blocks, for use in prompts, regex, and DB storage."""
+        return blocks_to_str(self.code) if self.code else ""
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation"""
         return asdict(self)
@@ -196,6 +203,16 @@ class Program:
         assert self.kernel_exec_result.eval_log, "exec result must have non-empty eval log"
         return self.kernel_exec_result.eval_log
 
+    @staticmethod
+    def _read_eval_log(artifact_path: str, exec_result: EvalResult) -> str:
+        """Read the evaluation log, surviving the case where it was never written."""
+        if os.path.exists(artifact_path):
+            with open(artifact_path, "r", encoding="utf-8", errors="replace") as inf:
+                return inf.read()
+        else:
+            reason = (exec_result.metadata or {}).get("error") or "evaluation produced no log"
+            return f"No evaluation log was written to {artifact_path}. Reason recorded by the evaluator: {reason}"
+
     def add_eval_results(self, exec_result: EvalResult, artifact_path: str = None, artifact_str: str = None):
         """Add evaluation results to the program"""
         # either the log is already part of the exec result, or it is provided as path or str
@@ -203,8 +220,7 @@ class Program:
         # load eval log and add to exec result
         if not exec_result.eval_log:
             if not artifact_str:
-                with open(artifact_path, "r") as inf:
-                    artifact_str = inf.read()
+                artifact_str = self._read_eval_log(artifact_path, exec_result)
             exec_result.eval_log = artifact_str
 
         # add exec result to program
@@ -236,7 +252,7 @@ class Program:
         kernel.score = exec_result.perf_score
         kernel.improve_over_native = exec_result.runtime_improvement
         kernel.improve_over_compile = exec_result.improve_over_compile
-        kernel.runtime_stats = exec_result.runtime_stats
+        kernel.runtime_stats = exec_result.runtime_stats or None
         if exec_result.profiler_data:
             custom_profiler_data = {}
             custom_profiler_data_detail = {}
@@ -268,15 +284,17 @@ class Program:
                 reference_profiler_data_detail if reference_profiler_data_detail else None
             )
 
-        kernel.template_results = exec_result.template_results
+        kernel.template_results = exec_result.template_results or None
+        # get worker infos from the dict-entries in metadata (note: metadata also records failures as plain strings)
+        arch_worker_infos = {k: v for k, v in exec_result.metadata.items() if isinstance(v, dict)}
         arch_compiler_worker_infos = {
-            k: v.get("compile_worker_info") for k, v in exec_result.metadata.items() if v.get("compile_worker_info")
+            k: v.get("compile_worker_info") for k, v in arch_worker_infos.items() if v.get("compile_worker_info")
         }
         arch_eval_worker_infos = {
-            k: v.get("eval_worker_info") for k, v in exec_result.metadata.items() if v.get("eval_worker_info")
+            k: v.get("eval_worker_info") for k, v in arch_worker_infos.items() if v.get("eval_worker_info")
         }
-        kernel.compile_worker_info = arch_compiler_worker_infos
-        kernel.eval_worker_info = arch_eval_worker_infos
+        kernel.compile_worker_info = arch_compiler_worker_infos or None
+        kernel.eval_worker_info = arch_eval_worker_infos or None
 
     def update_Kernel(self, kernel: Kernel):
         """Populate a Kernel database object from this Program"""
@@ -291,10 +309,10 @@ class Program:
             # Local import avoids circular dependency with evolve_database_optimization_aware.
             from kernelfoundry.algorithm.evolve_database_optimization_aware import OptimizationFeatureClassifier
 
-            optim_profile = OptimizationFeatureClassifier.classify_from_code(self.code)
+            optim_profile = OptimizationFeatureClassifier.classify_from_code(self.code_as_str)
             kernel.optimization_profile = {"map_elite_cell": list(optim_profile)}
 
-        kernel.output_code = self.code
+        kernel.output_code = self.code_as_str
         kernel.output_language = self.language
 
         if self.kernel_exec_result is not None:

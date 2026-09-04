@@ -1,0 +1,11 @@
+# @package _global_
+# Agentic pipeline. Composes base.yaml (shared with run.yaml) and layers on the
+# agentic-specific groups and field overrides below.
+defaults:
+  - base
+  - controller: copilot
+  - skills: default
+  - override prompt: agentic
+  - _self_
+
+agentic_workflow: true

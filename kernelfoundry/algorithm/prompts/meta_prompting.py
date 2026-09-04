@@ -885,7 +885,7 @@ class MetaPrompter:
         for attempt in range(self.max_retries + 1):
             try:
                 logging.info("[MetaPrompter] CALLING META-PROMPTING LLM")
-                response, _ = self.llm_server(messages=messages, return_model_info=True)
+                response, _ = self.llm_server(messages=messages)
                 # DEBUG: save messages
                 # test = messages.copy()
                 # test.append({"role": "assistant", "content": response})

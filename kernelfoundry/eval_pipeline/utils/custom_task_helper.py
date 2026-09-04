@@ -5,8 +5,8 @@ import sys
 from pathlib import Path
 import subprocess
 from functools import partial
-from pyrootutils import find_root
 
+from kernelfoundry import PACKAGE_ROOT
 from kernelfoundry.eval_pipeline.utils.memory_file_map import MemoryFileMap
 
 __all__ = [
@@ -17,6 +17,7 @@ __all__ = [
     "has_reference_build_step",
     "get_config",
     "update_block",
+    "blocks_to_str",
 ]
 
 
@@ -64,9 +65,7 @@ def get_test_names(task_root: Path | str) -> dict[str, list[str]]:
     """
     task_root = Path(task_root)
     env = os.environ.copy()
-
-    kf_root = find_root(search_from=__file__, indicator=".project-root")
-    env["PYTHONPATH"] = kf_root.as_posix() + os.pathsep + env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = PACKAGE_ROOT.parent.as_posix() + os.pathsep + env.get("PYTHONPATH", "")
 
     # Get all tests
     result = subprocess.run(
@@ -106,6 +105,8 @@ def get_test_names(task_root: Path | str) -> dict[str, list[str]]:
         text=True,
         env=env,
     )
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to collect profile tests:\n{result.stdout}\n{result.stderr}")
     profile_tests = []
     for line in result.stdout.splitlines():
         if "task.py::" in line:
@@ -145,7 +146,6 @@ def get_block(task_root: Path | str | MemoryFileMap, key: str) -> dict[str, str]
             files += list(task_root.rglob(f"*{ext}"))
 
     for file in sorted(files):
-        block_found = False
         if isinstance(task_root, MemoryFileMap):
             relative_path = file
             open_fn = partial(task_root.open, file_path=file)
@@ -156,32 +156,36 @@ def get_block(task_root: Path | str | MemoryFileMap, key: str) -> dict[str, str]
         with open_fn(mode="r") as f:
             lines = f.readlines()
 
-            in_reference = False
-            reference_lines = []
-            for line in lines:
-                if f"[{key}_START]" in line:
-                    if in_reference:
-                        raise ValueError(f"Nested or duplicate [{key}_START] found in {file}")
-                    in_reference = True
-                    block_found = True
-                    continue
-                if f"[{key}_END]" in line:
-                    if not in_reference:
-                        raise ValueError(f"[{key}_END] found without matching [{key}_START] in {file}")
-                    in_reference = False
-                    continue
-                if in_reference:
-                    reference_lines.append(line)
+        in_block = False
+        current_block_lines = []
+        block_contents = []  # list of line-lists, one per block found in this file
+        for line in lines:
+            if f"[{key}_START]" in line:
+                if in_block:
+                    raise ValueError(f"Nested [{key}_START] found in {file}")
+                in_block = True
+                current_block_lines = []
+                continue
+            if f"[{key}_END]" in line:
+                if not in_block:
+                    raise ValueError(f"[{key}_END] found without matching [{key}_START] in {file}")
+                in_block = False
+                block_contents.append(current_block_lines)
+                continue
+            if in_block:
+                current_block_lines.append(line)
 
-        if block_found:
+        contents = []
+        for block_lines in block_contents:
             # Remove leading empty lines
-            while reference_lines and reference_lines[0].strip() == "":
-                reference_lines.pop(0)
+            while block_lines and block_lines[0].strip() == "":
+                block_lines.pop(0)
             # Remove trailing empty lines
-            while reference_lines and reference_lines[-1].strip() == "":
-                reference_lines.pop()
-            content = "".join(reference_lines)
-            result[str(relative_path)] = content
+            while block_lines and block_lines[-1].strip() == "":
+                block_lines.pop()
+            contents.append("".join(block_lines))
+        if contents:
+            result[str(relative_path)] = contents
     return result
 
 
@@ -190,6 +194,7 @@ def update_block(
     key: str,
     path: str | Path,
     content: str,
+    block_index: int = 0,
 ) -> None:
     """Updates the block annotated with the given key in the specified file.
 
@@ -201,22 +206,33 @@ def update_block(
         path (str | Path): The path to the file within the task.
         content (str): The new content to insert into the block.
     """
+    path_str = str(path)
     lines = []
-    path = str(path)
-    with task.open(file_path=path, mode="r") as f:
+    with task.open(file_path=path_str, mode="r") as f:
         lines = f.readlines()
 
-    start_idx = None
-    end_idx = None
-    for i, line in enumerate(lines):
-        if f"[{key}_START]" in line:
-            start_idx = i
-        elif f"[{key}_END]" in line:
-            end_idx = i
-            break
+    # Collect all (start, end) line-index pairs for occurrences of the block
+    occurrences = []
+    i = 0
+    while i < len(lines):
+        if f"[{key}_START]" in lines[i]:
+            start = i
+            for j in range(i + 1, len(lines)):
+                if f"[{key}_END]" in lines[j]:
+                    occurrences.append((start, j))
+                    i = j + 1
+                    break
+            else:
+                raise ValueError(f"[{key}_START] without matching [{key}_END] in {path_str}")
+        else:
+            i += 1
 
-    assert start_idx is not None and end_idx is not None, f"Block with key '{key}' not found in {path}"
-    assert start_idx < end_idx, f"Malformed block with key '{key}' in {path}"
+    assert len(occurrences) > 0, f"Block with key '{key}' not found in {path_str}"
+    assert block_index < len(
+        occurrences
+    ), f"Block index {block_index} out of range; only {len(occurrences)} '{key}' block(s) in {path_str}"
+
+    start_idx, end_idx = occurrences[block_index]
 
     # Build the new lines: everything before start, the markers with new content, everything after end
     new_lines = lines[: start_idx + 1]
@@ -226,7 +242,7 @@ def update_block(
     new_lines.extend(lines[end_idx:])
 
     # Write back to the task
-    with task.open(file_path=path, mode="w") as f:
+    with task.open(file_path=path_str, mode="w") as f:
         f.writelines(new_lines)
 
 
@@ -289,13 +305,33 @@ def get_config(task_root: Path | str | MemoryFileMap, config_stem: str = "config
     return OmegaConf.to_container(config, resolve=True)
 
 
+def blocks_to_str(blocks: dict[str, list[str]]) -> str:
+    """Converts a blocks dict (file_path -> list[content]) to a single string.
+
+    For a single block total, returns the content directly. For multiple blocks,
+    combines them with ### Block: file_path ### separator lines. Split back with:
+        re.split(r'^### Block: (.+?) ###$', text, flags=re.MULTILINE)
+
+    Args:
+        blocks: A dictionary mapping file paths to lists of block contents.
+
+    Returns:
+        str: The combined string representation of the blocks.
+    """
+    all_blocks = [(fp, c) for fp, contents in blocks.items() for c in contents]
+    if len(all_blocks) == 1:
+        return all_blocks[0][1]
+    parts = [f"### Block: {fp} ###\n{c}" for fp, c in all_blocks]
+    return "\n".join(parts)
+
+
 def dict_to_yaml_str(data: dict, indent: int = 0) -> str:
     """Converts a dict to a yaml string.
 
     This function can be used to print dicts in a yaml format for better readability.
 
     Args:
-        config (dict): The task configuration as a dictionary.
+        data (dict): The task configuration as a dictionary.
         indent (int): Number of spaces to indent the yaml string.
     """
     from omegaconf import OmegaConf

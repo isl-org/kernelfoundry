@@ -1,6 +1,7 @@
 """Page for showing job logs (build logs, test logs, profiling logs) and a job overview page"""
 
 import re
+import traceback
 from typing import Optional
 from nicegui import ui
 from nicegui.events import GenericEventArguments
@@ -334,6 +335,7 @@ def job_logs_detail_page(job_id: int):
             "test_correctness": {"reference": [], "custom": []},
             "test_performance": {"reference": [], "custom": []},
             "profiling": {"reference": [], "custom": []},
+            "session_log": {"custom": []},
         }
         other_logs = []
 
@@ -349,6 +351,8 @@ def job_logs_detail_page(job_id: int):
                     "trial": log.extra.get("trial", 0),
                     "version": log.extra.get("version", 0),
                     "host": worker_info.get("hostname", "unknown"),
+                    "session_log": log.extra.get("log", {}),
+                    "agent_session_id": getattr(log, "agent_session_id", "N/A"),
                 }
                 log_entry.update(data_info)
             else:
@@ -365,6 +369,7 @@ def job_logs_detail_page(job_id: int):
                 "test_custom_performance": ("test_performance", "custom"),
                 "test_reference_trace": ("profiling", "reference"),
                 "test_custom_trace": ("profiling", "custom"),
+                "session_log": ("session_log", "custom"),
             }
 
             for prefix, (category, log_type) in prefix_mappings.items():
@@ -389,6 +394,7 @@ def job_logs_detail_page(job_id: int):
             test_correctness_tab = ui.tab("Test Correctness")
             test_performance_tab = ui.tab("Test Performance")
             profiling_tab = ui.tab("Profiling")
+            session_log_tab = ui.tab("Agent Session Logs")
 
         with ui.tab_panels(tabs, value=main_log_tab).classes("w-full"):
             with ui.tab_panel(main_log_tab):
@@ -406,8 +412,13 @@ def job_logs_detail_page(job_id: int):
             with ui.tab_panel(profiling_tab):
                 create_side_by_side_log_section("Profiling Logs", log_groups["profiling"])
 
+            with ui.tab_panel(session_log_tab):
+                create_agent_session_log_section("Agent Session Logs", log_groups["session_log"]["custom"])
+
     except Exception as e:
-        ui.label(f"Error loading logs for job {job_id}: {str(e)}").classes("text-xl text-red-500")
+        ui.label(f"Error loading logs for job {job_id}: {str(e)}\n\n{traceback.format_exc()}").classes(
+            "text-xl text-red-500 whitespace-pre-wrap"
+        )
 
 
 def create_log_section(title, logs):
@@ -436,6 +447,36 @@ def create_log_section(title, logs):
                 ui.code("\n".join(log_lines)).classes("whitespace-pre text-sm w-full")
             else:
                 ui.label("No log entries available").classes("text-gray-400 italic")
+
+
+def create_agent_session_log_section(title, logs):
+    """Create a section displaying logs."""
+    if not logs:
+        ui.label(f"No {title.lower()} found").classes("text-gray-500")
+        return
+
+    ui.label(f"{title} ({len(logs)} entries)").classes("text-lg font-bold mb-2")
+
+    # Sort logs by timestamp (most recent first)
+    sorted_logs = sorted(logs, key=lambda x: x["timestamp"] or "")
+
+    # Create a separate card for each log entry
+    for log_entry in sorted_logs:
+        timestamp_str = log_entry["timestamp"].strftime("%H:%M:%S") if log_entry["timestamp"] else "00:00:00"
+        session_id = log_entry["agent_session_id"]
+        message_str = log_entry["session_log"][:10000]
+
+        with ui.card().classes("w-full mb-2"):
+            with ui.card_section():
+                # Title with timestamp and session id
+                title_str = f"{timestamp_str} | Session ID: {session_id}"
+                ui.label(title_str).classes("text-sm font-medium text-gray-700 mb-2")
+
+                # Log content spanning the whole card
+                if message_str:
+                    ui.code(message_str, language="markdown").classes("whitespace-pre-wrap text-sm")
+                else:
+                    ui.label("No log content available").classes("text-gray-400 italic")
 
 
 def create_side_by_side_log_section(title, log_data):
@@ -510,8 +551,8 @@ def get_status_from_logs(logs, extract_runtime=False):
     runtime = None
 
     # Look for return code patterns and runtime in log content
-    content = log_entry.get("content", "")
-    if "returncode=0" in content or "return code: 0" in content or "completed successfully" in content.lower():
+    content = log_entry.get("content", "").lower()
+    if "returncode=0" in content or "return code: 0" in content or "completed successfully" in content:
         status = "success"
     elif (
         "returncode=1" in content
@@ -544,9 +585,9 @@ def create_summary_section(log_groups, is_validation_job=False):
     # find latest trial
     max_trial_ref, max_trial_custom = 0, 0
     for category in categories:
-        trials = [entry.get("trial", 0) for entry in log_groups[category]["reference"]]
+        trials = [entry.get("trial", 0) or 0 for entry in log_groups[category]["reference"]]
         max_trial_ref = max(max_trial_ref, max(trials) if trials else 0)
-        trials = [entry.get("trial", 0) for entry in log_groups[category]["custom"]]
+        trials = [entry.get("trial", 0) or 0 for entry in log_groups[category]["custom"]]
         max_trial_custom = max(max_trial_custom, max(trials) if trials else 0)
 
     # Pre-calculate all statuses and runtimes
@@ -555,7 +596,7 @@ def create_summary_section(log_groups, is_validation_job=False):
 
     for category in categories:
         # Reference logs
-        ref_logs = [log for log in log_groups[category]["reference"] if log.get("trial", 0) == max_trial_ref]
+        ref_logs = [log for log in log_groups[category]["reference"] if (log.get("trial", 0) or 0) == max_trial_ref]
         if category == "test_performance":
             result = get_status_from_logs(ref_logs, extract_runtime=True)
             ref_results[category] = {"status": result["status"], "runtime": result["runtime"]}

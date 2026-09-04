@@ -33,7 +33,7 @@ class DatabaseLogHandler(logging.Handler):
                 "agent_session_id": record.__dict__.get("agent_session_id", None),
                 "level": level_name,
                 "message": self.format(record),
-                "extra": record_data,
+                "extra": record_data or None,
                 "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc),
             }
 

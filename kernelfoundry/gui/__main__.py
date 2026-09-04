@@ -1,14 +1,20 @@
 from pathlib import Path
 import tempfile
-import autoroot
+import argparse
 from nicegui import ui, app
 from omegaconf import OmegaConf
+import os
+from dotenv import load_dotenv
 
 import kernelfoundry.eval_pipeline.database as db
 from kernelfoundry.gui.job_logs import job_logs_detail_page, job_logs_main_page
 from kernelfoundry.gui.kernel_graph import kernel_graph_page
 from kernelfoundry.gui.kernel_detail import kernel_detail_page
 from kernelfoundry.gui.roofline import roofline_page
+
+# Loads DB/queue/LLM credentials from a .env file at the repository root. A no-op when there is
+# no .env; then it will use a local sqlite database.
+load_dotenv(os.environ.get("KERNELFOUNDRY_ENV_FILE", Path.cwd() / ".env"))
 
 
 def _init_database() -> None:
@@ -58,18 +64,19 @@ def roofline_page_route(kernel_id: int) -> None:
     roofline_page(kernel_id)
 
 
-if __name__ == "__main__":
+def _on_exception(e: Exception) -> None:
+    ui.notify(
+        f"{type(e).__name__}: {e}",
+        type="negative",
+        timeout=0,
+        close_button=True,
+        multi_line=True,
+    )
+
+
+def main() -> None:
     _init_database()
-    # ui.run(
-    #     host="0.0.0.0",
-    #     port=8889,
-    #     reload=False,
-    #     storage_secret="kernelfoundry_slim",
-    #     title="KernelFoundry Viewer",
-    #     show=False,
-    #     loop="asyncio",
-    #     favicon=_load_favicon(),
-    # )
+    app.on_exception(_on_exception)
 
     with tempfile.TemporaryDirectory(prefix="webui_profiler_data_") as tmpdir:
         app.add_static_files("/profiler_data", tmpdir)
@@ -82,9 +89,12 @@ if __name__ == "__main__":
             host="0.0.0.0",
             port=8885,
             reload=False,
-            storage_secret="code_gen_kernel",
             title="KernelFoundry Viewer",
             show=False,
             loop="asyncio",  # use asyncio loop to avoid the buserror problem with uvloop
             favicon=_load_favicon(),
         )
+
+
+if __name__ == "__main__":
+    main()

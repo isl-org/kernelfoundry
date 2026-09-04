@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+#
+# kf - drive the local KernelFoundry image without typing docker flags.
+#
+#   kf build [docker build args...]   build or rebuild the image, from the checkout around
+#                                     this script or from the public repository if there is
+#                                     none, which is the case for a copy taken out of the
+#                                     image with:
+#                                       id=$(docker create <image>)
+#                                       docker cp "$id:/kf" ./kf && docker rm "$id"
+#   kf pull                           fetch the published image instead of building
+#   kf run <hydra overrides...>       run the kernel generation algorithm
+#   kf gui                            serve the results UI on http://localhost:8885
+#   kf shell                          interactive shell inside the container
+#   kf exec <command...>              run any command inside the container
+#
+# Examples:
+#   kf run task=tasks/example_custom task_origin=custom job_name=demo gpu_arch=bmg language=SYCL
+#   kf run task=./my_task task_origin=custom job_name=mine gpu_arch=bmg validate=true max_iters=0
+#   kf gui
+#
+# The published image is pulled automatically the first time it is needed. Results are written
+# to ./runs on the host, the API key, base url and proxy variables are forwarded when set, and a
+# .env next to you is mounted into the KernelFoundry root.
+#
+# The host's CA bundle is shared with the container so that an LLM endpoint signed by a
+# private root certificate can be reached. Pass --no-ca to leave the image's own trust
+# store alone.
+#
+# Environment:
+#   KF_IMAGE        image tag                        (default kernelfoundry:local)
+#   KF_REMOTE_IMAGE image that 'kf pull' fetches     (default ghcr.io/isl-org/kernelfoundry:latest)
+#   KF_SOURCE       repository 'kf build' falls back to when there is no checkout
+#   KF_CA_BUNDLE    host CA bundle to share          (default /etc/ssl/certs/ca-certificates.crt)
+#   KF_RUNS_DIR     host directory for runs/         (default $PWD/runs)
+#   KF_GUI_PORT     host port for the UI             (default 8885)
+#   KF_SHM_SIZE     container /dev/shm size          (default 1g)
+#   KF_DOCKER_ARGS  extra flags for docker run
+#
+# Pass -n / --dry-run before the subcommand to print the docker command instead of
+# running it, and --no-ca to skip sharing the host CA bundle.
+
+set -euo pipefail
+
+IMAGE="${KF_IMAGE:-kernelfoundry:local}"
+REMOTE_IMAGE="${KF_REMOTE_IMAGE:-ghcr.io/isl-org/kernelfoundry:latest}"
+SOURCE="${KF_SOURCE:-https://github.com/isl-org/kernelfoundry.git#main}"
+CA_BUNDLE="${KF_CA_BUNDLE-/etc/ssl/certs/ca-certificates.crt}"
+GUI_PORT="${KF_GUI_PORT:-8885}"
+SHM_SIZE="${KF_SHM_SIZE:-1g}"
+RUNS_DIR="${KF_RUNS_DIR:-$PWD/runs}"
+
+CONTAINER_KF_HOME=/opt/kernelfoundry
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+dry_run=0
+
+die() {
+    echo "kf: $*" >&2
+    exit 1
+}
+
+note() {
+    echo "kf: $*" >&2
+}
+
+usage() {
+    awk 'NR==1 {next} /^#/ {sub(/^#[[:space:]]?/, ""); print; next} {exit}' "${BASH_SOURCE[0]}"
+}
+
+build_image() {
+    local args=(build --tag "$IMAGE") context
+    if [[ -f "$SCRIPT_DIR/Dockerfile" ]]; then
+        # The Dockerfile installs the surrounding checkout, so the context is the
+        # repository root and the Dockerfile is selected out of this directory with -f.
+        args+=(--file "$SCRIPT_DIR/Dockerfile")
+        context="$SCRIPT_DIR/.."
+    else
+        # No checkout, which is the normal case for a copy lifted out of the image with
+        # docker cp. Docker can fetch the repository and use it as the context itself.
+        args+=(--file docker/Dockerfile)
+        context="$SOURCE"
+        note "no checkout beside this script, building from $SOURCE"
+    fi
+    [[ -n "${http_proxy:-${HTTP_PROXY:-}}" ]] &&
+        args+=(--build-arg "HTTP_PROXY=${http_proxy:-$HTTP_PROXY}")
+    [[ -n "${https_proxy:-${HTTPS_PROXY:-}}" ]] &&
+        args+=(--build-arg "HTTPS_PROXY=${https_proxy:-$HTTPS_PROXY}")
+    # The image carries a devcontainer.json for whoever lifts it out with docker cp, and that
+    # copy has to name the image it came from. Passed before "$@" so that a build publishing
+    # under a different tag can override it with its own --build-arg.
+    args+=(--build-arg "KF_IMAGE_REF=$IMAGE")
+    args+=("$@" "$context")
+    if ((dry_run)); then
+        printf 'docker'
+        printf ' %q' "${args[@]}"
+        printf '\n'
+        return 0
+    fi
+    note "building $IMAGE (this pulls oneAPI and takes a while on a cold cache)"
+    docker "${args[@]}"
+}
+
+pull_image() {
+    if ((dry_run)); then
+        printf 'docker pull %q\ndocker tag %q %q\n' "$REMOTE_IMAGE" "$REMOTE_IMAGE" "$IMAGE"
+        return 0
+    fi
+    docker pull "$REMOTE_IMAGE"
+    # Retagged so that the other subcommands, which all use $IMAGE, pick it up.
+    [[ "$REMOTE_IMAGE" != "$IMAGE" ]] && docker tag "$REMOTE_IMAGE" "$IMAGE"
+    note "tagged $REMOTE_IMAGE as $IMAGE"
+}
+
+ensure_image() {
+    if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+        note "image $IMAGE not found, pulling $REMOTE_IMAGE"
+        pull_image
+    fi
+}
+
+# Flags every subcommand needs. Collected into DOCKER_ARGS.
+collect_docker_args() {
+    DOCKER_ARGS=(
+        run --rm --init
+        --shm-size "$SHM_SIZE"
+        --workdir "$CONTAINER_KF_HOME"
+    )
+
+    # Keep generated files owned by the caller rather than by root.
+    DOCKER_ARGS+=(--user "$(id -u):$(id -g)" --env "USER=${USER:-$(id -un)}")
+
+    if [[ -d /dev/dri ]]; then
+        DOCKER_ARGS+=(--device /dev/dri)
+        # The image has no render group, and its numeric id differs between hosts, so
+        # take the ids straight off the device nodes.
+        local gid
+        while read -r gid; do
+            [[ -n "$gid" ]] && DOCKER_ARGS+=(--group-add "$gid")
+        done < <(find /dev/dri -maxdepth 1 -type c -printf '%G\n' 2>/dev/null | sort -u)
+    else
+        note "warning: /dev/dri not found, the container will have no GPU"
+    fi
+
+    mkdir -p "$RUNS_DIR"
+    DOCKER_ARGS+=(--volume "$RUNS_DIR:$CONTAINER_KF_HOME/runs")
+
+    # Makes host files reachable for options such as kernels_iter_0_path=/work/kernel.cpp.
+    DOCKER_ARGS+=(--volume "$PWD:/work")
+
+    if [[ -f "$PWD/.env" ]]; then
+        DOCKER_ARGS+=(--volume "$PWD/.env:$CONTAINER_KF_HOME/.env:ro")
+    fi
+
+    # An endpoint behind a private PKI, such as a company LLM gateway, is signed by a root
+    # certificate the image does not carry, so the host's trust store is shared with it.
+    if [[ -n "$CA_BUNDLE" ]]; then
+        if [[ -f "$CA_BUNDLE" ]]; then
+            DOCKER_ARGS+=(--volume "$CA_BUNDLE:/etc/ssl/certs/ca-certificates.crt:ro")
+        elif [[ -n "${KF_CA_BUNDLE:-}" ]]; then
+            die "KF_CA_BUNDLE=$CA_BUNDLE does not exist"
+        fi
+    fi
+
+    local var
+    for var in OPENAI_API_KEY ANTHROPIC_API_KEY OPENAI_BASE_URL ANTHROPIC_BASE_URL \
+        http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY; do
+        [[ -n "${!var:-}" ]] && DOCKER_ARGS+=(--env "$var=${!var}")
+    done
+
+    if [[ -t 0 && -t 1 ]]; then
+        DOCKER_ARGS+=(--interactive --tty)
+    fi
+
+    if [[ -n "${KF_DOCKER_ARGS:-}" ]]; then
+        local extra
+        read -r -a extra <<<"$KF_DOCKER_ARGS"
+        DOCKER_ARGS+=("${extra[@]}")
+    fi
+}
+
+# A task= override naming a path on the host is bind-mounted, so that both
+# task=tasks/example_custom (shipped with KernelFoundry) and task=./my_task work.
+rewrite_task_override() {
+    REWRITTEN=()
+    local arg value abs
+    for arg in "$@"; do
+        if [[ "$arg" == task=* ]]; then
+            value="${arg#task=}"
+            if [[ -n "$value" && -e "$value" ]]; then
+                abs="$(cd -- "$(dirname -- "$value")" && pwd)/$(basename -- "$value")"
+                DOCKER_ARGS+=(--volume "$abs:/kf_task")
+                REWRITTEN+=("task=/kf_task")
+                note "mounting task $abs at /kf_task"
+                continue
+            fi
+        fi
+        REWRITTEN+=("$arg")
+    done
+}
+
+invoke() {
+    if ((dry_run)); then
+        printf 'docker'
+        printf ' %q' "$@"
+        printf '\n'
+        return 0
+    fi
+    exec docker "$@"
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+    -n | --dry-run)
+        dry_run=1
+        shift
+        ;;
+    --no-ca)
+        CA_BUNDLE=""
+        shift
+        ;;
+    -h | --help | help)
+        usage
+        exit 0
+        ;;
+    *) break ;;
+    esac
+done
+
+# This script drives docker from the host. A copy of it sits at /kf inside the image, so it
+# can be lifted out with docker cp, and running that copy in place is a plausible mistake.
+((dry_run)) || command -v docker >/dev/null ||
+    die "docker not found. kf belongs on the host; inside the container run the algorithm
+    directly with 'python -m kernelfoundry.algorithm run ...'"
+
+command="${1:-}"
+[[ $# -gt 0 ]] && shift
+
+case "$command" in
+build)
+    build_image "$@"
+    ;;
+pull)
+    pull_image
+    ;;
+run)
+    [[ $# -gt 0 ]] || die "run needs at least a task and a job_name, see 'kf help'"
+    ensure_image
+    collect_docker_args
+    rewrite_task_override "$@"
+    invoke "${DOCKER_ARGS[@]}" "$IMAGE" \
+        python -m kernelfoundry.algorithm run "${REWRITTEN[@]}"
+    ;;
+gui)
+    ensure_image
+    collect_docker_args
+    DOCKER_ARGS+=(--publish "${GUI_PORT}:8885")
+    note "UI on http://localhost:${GUI_PORT} (reading $RUNS_DIR)"
+    invoke "${DOCKER_ARGS[@]}" "$IMAGE" python start_gui.py
+    ;;
+shell)
+    ensure_image
+    collect_docker_args
+    invoke "${DOCKER_ARGS[@]}" "$IMAGE" bash
+    ;;
+exec)
+    [[ $# -gt 0 ]] || die "exec needs a command, see 'kf help'"
+    ensure_image
+    collect_docker_args
+    invoke "${DOCKER_ARGS[@]}" "$IMAGE" "$@"
+    ;;
+"")
+    usage
+    exit 1
+    ;;
+*)
+    die "unknown command '$command', see 'kf help'"
+    ;;
+esac

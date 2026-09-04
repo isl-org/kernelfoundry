@@ -135,6 +135,24 @@ def deterministic_code_hash(code: str) -> int:
 # SCORE CALCULATION
 # ============================================================================
 
+#: What the integer part of a combined score means, from EvalResult.perf_score. The score is that
+#: ladder plus a runtime term, so anything below 2.0 describes a kernel that never ran.
+_PERF_SCORE_MEANINGS = {
+    0: "syntax error",
+    1: "did not compile",
+    2: "compiled but failed at runtime",
+    3: "shape mismatch",
+    4: "value mismatch",
+}
+
+
+def describe_score(score: float) -> str:
+    """Spell out a score that encodes a failure, as a parenthetical for a log line.
+    Returns an empty string for a passing kernel, where the number speaks for itself.
+    """
+    meaning = _PERF_SCORE_MEANINGS.get(int(score))
+    return f" -- {meaning}" if meaning else ""
+
 
 def get_main_score(metrics: Dict[str, Any]) -> float:
     """
@@ -932,7 +950,7 @@ class OptimizationAwareDatabase:
         Returns:
             Tuple of (memory_opt, compute_opt, parallelism_opt, esimd_opt)
         """
-        return OptimizationFeatureClassifier.classify_from_code(program.code, program.language)
+        return OptimizationFeatureClassifier.classify_from_code(program.code_as_str, program.language)
 
     def _coords_to_key(self, coords: Tuple[int, int, int, int]) -> Tuple[int, int, int, int]:
         """
@@ -1341,7 +1359,7 @@ class OptimizationAwareDatabase:
 
         if self.best_program_id is None:
             self.best_program_id = program.id
-            logging.info(f"New best program: {program.id} (score={score:.4f})")
+            logging.info(f"New best program: {program.id} (score={score:.4f}{describe_score(score)})")
         else:
             best = self.programs.get(self.best_program_id)
             if best:
@@ -1349,7 +1367,7 @@ class OptimizationAwareDatabase:
                 if score > best_score:
                     self.best_program_id = program.id
                     logging.info(
-                        f"New best program: {program.id} (score={score:.4f}) "
+                        f"New best program: {program.id} (score={score:.4f}{describe_score(score)}) "
                         f"replaced {best.id} (score={best_score:.4f})"
                     )
 
@@ -3069,8 +3087,8 @@ class OptimizationAwareDatabase:
             sample = list(self.programs.values())[:sample_size]
 
             for program in sample:
-                coords1 = OptimizationFeatureClassifier.classify_from_code(program.code, program.language)
-                coords2 = OptimizationFeatureClassifier.classify_from_code(program.code, program.language)
+                coords1 = OptimizationFeatureClassifier.classify_from_code(program.code_as_str, program.language)
+                coords2 = OptimizationFeatureClassifier.classify_from_code(program.code_as_str, program.language)
 
                 if coords1 != coords2:
                     logging.error(f"Non-deterministic classification for {program.id}: " f"{coords1} != {coords2}")

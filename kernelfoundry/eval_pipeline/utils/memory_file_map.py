@@ -1,6 +1,8 @@
 import base64
+from datetime import datetime
 from io import BytesIO, TextIOWrapper
 import logging
+import os
 from pathlib import Path
 import tarfile
 from collections import defaultdict
@@ -14,6 +16,13 @@ class MemoryFileMap:
 
     def __init__(self):
         self.file_map = defaultdict(BytesIO)
+        # Per-file metadata (permission bits + mtime), keyed identically to file_map.
+        self.meta_map: dict[str, dict] = {}
+
+    def _default_meta(self, key: str) -> dict:
+        """Metadata for a freshly written file: keep known mode, else 0o644; mtime=now."""
+        existing = self.meta_map.get(key)
+        return {"mode": existing["mode"] if existing else 0o644, "mtime": time.time()}
 
     def __contains__(self, file_path: str | Path) -> bool:
         """Checks if a file exists in the archive."""
@@ -22,6 +31,7 @@ class MemoryFileMap:
     def clear(self):
         """Clears all files from the archive."""
         self.file_map.clear()
+        self.meta_map.clear()
 
     def open(self, file_path: str | Path, mode: str = "r") -> BytesIO | TextIOWrapper:
         """Opens a file in the archive with the specified mode.
@@ -60,6 +70,7 @@ class MemoryFileMap:
             stream = BytesIO()
             stream.close = lambda: None  # Prevent closing the stream
             self.file_map[key] = stream
+            self.meta_map[key] = self._default_meta(key)
             if mode == "w":
                 return TextIOWrapper(stream, encoding="utf-8")
             return stream
@@ -95,15 +106,20 @@ class MemoryFileMap:
 
         common_root = Path(*common_parts)
         new_file_map = defaultdict(BytesIO)
+        new_meta_map: dict[str, dict] = {}
 
         for file_path, byte_stream in self.file_map.items():
             path_obj = Path(file_path)
             relative_path = path_obj.relative_to(common_root)
             if relative_path == Path("."):
                 continue  # Skip the root directory itself
-            new_file_map[str(relative_path)] = byte_stream
+            new_key = relative_path.as_posix()
+            new_file_map[new_key] = byte_stream
+            if file_path in self.meta_map:
+                new_meta_map[new_key] = self.meta_map[file_path]
 
         self.file_map = new_file_map
+        self.meta_map = new_meta_map
         return True
 
     def __getitem__(self, file_path: str | Path) -> bytes | None:
@@ -130,7 +146,9 @@ class MemoryFileMap:
             file_path (str | Path): Path of the file within the archive.
             content (bytes): Content of the file.
         """
-        self.file_map[str(file_path)] = BytesIO(content)
+        key = str(file_path)
+        self.file_map[key] = BytesIO(content)
+        self.meta_map[key] = self._default_meta(key)
 
     def _check_valid_file(self, file_path: str | Path):
         """Check if a file should be included based on ignore patterns."""
@@ -148,11 +166,13 @@ class MemoryFileMap:
             bytes: The tarball as a byte string.
         """
         tar_bytes = BytesIO()
-        with tarfile.open(fileobj=tar_bytes, mode="w:gz") as tar:
+        with tarfile.open(fileobj=tar_bytes, mode=mode) as tar:
             for file_path, byte_stream in self.file_map.items():
                 byte_stream.seek(0)
+                meta = self.meta_map.get(file_path, {})
                 info = tarfile.TarInfo(name=file_path)
-                info.mtime = int(time.time())
+                info.mode = meta.get("mode", 0o644)
+                info.mtime = int(meta.get("mtime", time.time()))
                 info.size = len(byte_stream.getvalue())
                 tar.addfile(tarinfo=info, fileobj=byte_stream)
         tar_bytes.seek(0)
@@ -181,6 +201,7 @@ class MemoryFileMap:
                 if file_obj and self._check_valid_file(member.name):
                     content = file_obj.read()
                     self.file_map[member.name] = BytesIO(content)
+                    self.meta_map[member.name] = {"mode": member.mode & 0o777, "mtime": float(member.mtime)}
 
     def from_zip(self, *, zip_bytes: bytes | None = None, zip_path: str | Path | None = None):
         """Loads files from a zip archive into the in-memory archive.
@@ -204,6 +225,11 @@ class MemoryFileMap:
                     with zip_file.open(file_info) as file_obj:
                         content = file_obj.read()
                         self.file_map[file_info.filename] = BytesIO(content)
+                    meta = {"mtime": datetime(*file_info.date_time).timestamp()}
+                    mode = (file_info.external_attr >> 16) & 0o777
+                    if mode:
+                        meta["mode"] = mode
+                    self.meta_map[file_info.filename] = meta
 
     def from_archive(self, *, archive_bytes: bytes | None = None, archive_path: str | Path | None = None):
         """Loads files from an archive (zip or tarball) into the in-memory archive.
@@ -267,6 +293,17 @@ class MemoryFileMap:
         with tarfile.open(fileobj=tar_bytes, mode="r") as tar:
             tar.extractall(path=output_path, filter="data")
 
+        # The tar "data" filter normalizes modes/mtime; reapply the recorded originals.
+        for file_path, meta in self.meta_map.items():
+            target = output_path / file_path
+            if not target.exists():
+                continue
+            if "mode" in meta:
+                os.chmod(target, meta["mode"])
+            if "mtime" in meta:
+                # os.utime takes (atime, mtime); we only track mtime, so use it for both.
+                os.utime(target, (meta["mtime"], meta["mtime"]))
+
     def from_disk(self, input_dir: str | Path, include_extensions: list[str] | None = None):
         """Loads files from disk into the in-memory archive.
 
@@ -282,29 +319,54 @@ class MemoryFileMap:
                 elif file_path.name == "Dockerfile":  # allow Dockerfile without extension
                     pass
                 relative_path = file_path.relative_to(input_path)
+                st = file_path.stat()
                 with open(file_path, "rb") as f:
                     content = f.read()
-                    self.file_map[str(relative_path)] = BytesIO(content)
+                    key = relative_path.as_posix()
+                    self.file_map[key] = BytesIO(content)
+                    self.meta_map[key] = {"mode": st.st_mode & 0o777, "mtime": st.st_mtime}
 
     def encode(self) -> dict:
         """Encodes the archive to a serializable dictionary.
 
         Returns:
-            dict: Dictionary mapping file paths to base64-encoded content.
+            dict: Mapping of file path -> {"content": base64 str, "mode": int, "mtime": float}.
+                mode/mtime are omitted for files with no recorded metadata.
         """
         encoded_map = {}
         for file_path, byte_stream in self.file_map.items():
             byte_stream.seek(0)
             encoded_content = base64.b64encode(byte_stream.getvalue()).decode("utf-8")
-            encoded_map[file_path] = encoded_content
+            entry = {"content": encoded_content}
+            meta = self.meta_map.get(file_path, {})
+            if "mode" in meta:
+                entry["mode"] = meta["mode"]
+            if "mtime" in meta:
+                entry["mtime"] = meta["mtime"]
+            encoded_map[file_path] = entry
         return encoded_map
 
     def decode(self, encoded_map: dict):
         """Decodes a serializable dictionary into the archive.
 
+        Accepts both the current format (per-file dict with content/mode/mtime) and the
+        legacy format (path -> base64 string) for backward compatibility.
+
         Args:
-            encoded_map (dict): Dictionary mapping file paths to base64-encoded content.
+            encoded_map (dict): Mapping produced by ``encode`` (new or legacy format).
         """
-        for file_path, encoded_content in encoded_map.items():
-            content = base64.b64decode(encoded_content.encode("utf-8"))
+        for file_path, value in encoded_map.items():
+            if isinstance(value, dict):
+                content = base64.b64decode(value["content"].encode("utf-8"))
+                meta = {}
+                if "mode" in value:
+                    meta["mode"] = value["mode"]
+                if "mtime" in value:
+                    meta["mtime"] = value["mtime"]
+                if meta:
+                    self.meta_map[file_path] = meta
+            else:
+                # Legacy format: bare base64 string with no metadata.
+                content = base64.b64decode(value.encode("utf-8"))
+                self.meta_map[file_path] = {"mode": 0o644, "mtime": time.time()}
             self.file_map[file_path] = BytesIO(content)

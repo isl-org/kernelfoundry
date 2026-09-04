@@ -4,7 +4,7 @@ from nicegui import ui
 from typing import Optional, Callable
 from pathlib import Path
 
-from kernelfoundry.gui.utils import get_id_by_uuid, get_kernel_by_id, get_task_by_id
+from kernelfoundry.gui.utils import get_id_by_uuid, get_kernel_by_id, get_task_by_id, normalize_runtime_stats
 
 
 def kernel_detail_page(
@@ -115,10 +115,7 @@ def kernel_detail_page(
                             {"name": "speedup", "label": "Speedup", "field": "speedup", "align": "right"},
                         ]
                         rows = []
-                        gpu_archs = kernel.gpu_arch.split(",")
-                        if list(runtime_stats.keys())[0] not in gpu_archs:
-                            assert len(gpu_archs) == 1, "This issue should only occur for single gpu jobs"
-                            runtime_stats = {kernel.gpu_arch: runtime_stats}
+                        runtime_stats = normalize_runtime_stats(runtime_stats, kernel.gpu_arch)
                         for gpu_name, benchmarks in runtime_stats.items():
                             for bench_name, stats in benchmarks.items():
                                 # Truncate benchmark name to last 30 chars for display

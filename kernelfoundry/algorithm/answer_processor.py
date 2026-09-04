@@ -26,7 +26,7 @@ class AnswerProcessor:
             postprocess_code_config: Configuration for code postprocessing.
         """
         self.language = language
-        self.diff_format = diff_format
+        assert not diff_format, "Diff format option is not supported anymore and will be removed in the future."
         self.postprocess_code = postprocess_code
         self.postprocess_code_config = postprocess_code_config
 
@@ -42,21 +42,11 @@ class AnswerProcessor:
             Program: new Program object storing code, parent id, etc
         """
         # Parse response based on evolution mode
-        if self.diff_format and parent is not None:
-            # # prior version: load parent code from file and extract code
-            # parent_code = extract_code_from_tags(problem_logger.read_prior_gen_code(), self.config.language.lower())
-            diff_blocks = extract_diffs(llm_response)
-            if len(diff_blocks) == 0:
-                child_code = "fail-placeholder"
-            else:
-                child_code = apply_diff(parent.code, llm_response)
-            changes_summary = format_diff_summary(diff_blocks)
-        else:
-            child_code = extract_code_from_tags(llm_response, self.language.lower())
-            # Use fallback heuristic for C++/CUDA/SYCL as last resort
-            if child_code is None and self.language.lower() in ("cpp", "cuda", "sycl"):
-                child_code = extract_cpp_code_heuristic(llm_response)
-            changes_summary = "Full rewrite"
+        child_code = extract_code_from_tags(llm_response, self.language.lower())
+        # Use fallback heuristic for C++/CUDA/SYCL as last resort
+        if child_code is None and self.language.lower() in ("cpp", "cuda", "sycl"):
+            child_code = extract_cpp_code_heuristic(llm_response)
+        changes_summary = "Full rewrite"
 
         # Remove evolution tags that should not appear in the final code
         if child_code:
@@ -68,6 +58,18 @@ class AnswerProcessor:
                 code_editing.replace_queue_with_torch_queue_and_remove_wait()
                 child_code = code_editing.source_code
 
+        # Map extracted string back to block dict structure
+        if parent is not None:
+            all_blocks = [(fp, i) for fp, contents in parent.code.items() for i in range(len(contents))]
+            assert len(all_blocks) == 1, (
+                f"AnswerProcessor only supports tasks with exactly one EVOLVE block, "
+                f"but parent has {len(all_blocks)} block(s) across file(s): {list(parent.code.keys())}"
+            )
+            fp = all_blocks[0][0]
+            child_code_dict = {fp: [child_code]} if child_code else {fp: [""]}
+        else:
+            child_code_dict = {"generated": [child_code]} if child_code else {}
+
         child_id = str(uuid.uuid4())
 
         # Create child program
@@ -75,7 +77,7 @@ class AnswerProcessor:
             # first iteration
             child_program = Program(
                 id=child_id,
-                code=child_code,
+                code=child_code_dict,
                 raw_llm_code=llm_response,
                 language=self.language,
                 iteration_found=iteration,
@@ -84,7 +86,7 @@ class AnswerProcessor:
             # has a parent
             child_program = Program(
                 id=child_id,
-                code=child_code,
+                code=child_code_dict,
                 raw_llm_code=llm_response,
                 language=self.language,
                 parent_id=parent.id,

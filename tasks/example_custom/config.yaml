@@ -4,4 +4,5 @@ job_name: matmul_lnl # a name for the specific job you want to run, e.g. optimiz
 gpu_arch: lnl # Short name of the target architecture
 language: SYCL # The target language
 
-# further run parameters (e.g. number of iterations, branches, etc for the evolutionary algorithm), see configs/run.yaml
+# further run parameters (e.g. number of iterations, branches, etc for the evolutionary algorithm),
+# see kernelfoundry/configs/run.yaml

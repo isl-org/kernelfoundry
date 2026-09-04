@@ -1,0 +1,767 @@
+#!/usr/bin/env python3
+"""
+copilot-sim — Simulates a programmatic GitHub Copilot CLI agent session.
+
+The agent operates on a task directory, replacing the EVOLVE region in a .sycl
+file: first injecting a broken kernel, running build_and_test (which fails),
+then fixing the kernel and re-running build_and_test (which passes).
+
+By default the build_and_test steps call the real KernelFoundry MCP server
+(configured via .mcp.json in the task directory or its parent).  Pass
+--sim-tools to use placeholder/simulated output instead.
+
+Usage:
+  echo "Fix the matmul kernel" | copilot-sim [FLAGS]
+  copilot-sim -p "Fix the matmul kernel" [FLAGS]
+
+Flags:
+  -p PROMPT         Prompt string (alternative to piped stdin)
+  --allow-all       Auto-approve all agent actions (no confirmation prompts)
+  --yolo            Alias for --allow-all; skip all safety checks
+  --no-ask-user     Suppress interactive clarification questions
+  --share           Share session transcript after completion
+  --sim-tools       Use simulated (placeholder) tool calls instead of the
+                    real MCP build_and_test tool
+  -h, --help        Show this help message
+"""
+
+import argparse
+import asyncio
+import json
+import os
+import re
+import sys
+import textwrap
+import time
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Terminal helpers
+# ---------------------------------------------------------------------------
+
+# This script prints box-drawing characters, and the agent under test runs it with stdout
+# redirected to a file. On Windows a redirected stream defaults to the locale codec (cp1252),
+# which cannot encode them, so the very first banner raised UnicodeEncodeError and the whole
+# simulated session died with exit 1 -- surfacing in the agent as a FileNotFoundError for the
+# telemetry file the session never got far enough to write. Name the codec explicitly.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
+USE_COLOR = sys.stdout.isatty()
+
+RESET = "\033[0m" if USE_COLOR else ""
+BOLD = "\033[1m" if USE_COLOR else ""
+DIM = "\033[2m" if USE_COLOR else ""
+CYAN = "\033[36m" if USE_COLOR else ""
+GREEN = "\033[32m" if USE_COLOR else ""
+YELLOW = "\033[33m" if USE_COLOR else ""
+RED = "\033[31m" if USE_COLOR else ""
+BLUE = "\033[34m" if USE_COLOR else ""
+MAGENTA = "\033[35m" if USE_COLOR else ""
+
+
+def banner(text: str, color: str = CYAN) -> None:
+    width = 72
+    print(f"\n{color}{BOLD}{'─' * width}{RESET}")
+    print(f"{color}{BOLD}  {text}{RESET}")
+    print(f"{color}{BOLD}{'─' * width}{RESET}\n")
+
+
+def section(label: str, color: str = BLUE) -> None:
+    print(f"{color}{BOLD}▶ {label}{RESET}")
+
+
+def agent_say(text: str) -> None:
+    """Render an agent thought/speech bubble."""
+    wrapped = textwrap.fill(text, width=68, initial_indent="  ", subsequent_indent="  ")
+    print(f"{DIM}┌{'─' * 70}┐{RESET}")
+    for line in wrapped.splitlines():
+        print(f"{DIM}│{RESET} {line:<68} {DIM}│{RESET}")
+    print(f"{DIM}└{'─' * 70}┘{RESET}")
+    print()
+
+
+def tool_call(name: str, inputs: dict) -> None:
+    """Display a simulated tool call header."""
+    print(f"\n{MAGENTA}{BOLD}⚙  TOOL CALL → {name}{RESET}")
+    print(f"{DIM}{'·' * 72}{RESET}")
+    for k, v in inputs.items():
+        if isinstance(v, str) and "\n" in v:
+            print(f"  {BOLD}{k}:{RESET}")
+            for line in v.splitlines():
+                print(f"    {DIM}{line}{RESET}")
+        else:
+            print(f"  {BOLD}{k}:{RESET} {v}")
+    print(f"{DIM}{'·' * 72}{RESET}")
+
+
+def tool_result(status: str, output: str, success: bool = True) -> None:
+    """Display a simulated tool result."""
+    icon = f"{GREEN}✔{RESET}" if success else f"{RED}✘{RESET}"
+    color = GREEN if success else RED
+    print(f"  {icon}  {color}{BOLD}[{status}]{RESET}")
+    for line in output.strip().splitlines():
+        print(f"  {DIM}{line}{RESET}")
+    print()
+
+
+def pause(seconds: float = 0.4) -> None:
+    time.sleep(seconds)
+
+
+# ---------------------------------------------------------------------------
+# File manipulation helpers
+# ---------------------------------------------------------------------------
+
+EVOLVE_START = "// [EVOLVE_START]"
+EVOLVE_END = "// [EVOLVE_END]"
+
+
+def read_file(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def replace_evolve_region(path: Path, new_body: str) -> str:
+    """
+    Replace the content between [EVOLVE_START] and [EVOLVE_END] markers
+    (keeping the markers themselves) with *new_body*.
+    Returns the full new file content.
+    """
+    source = read_file(path)
+    pattern = re.compile(
+        r"(// \[EVOLVE_START\]).*?(// \[EVOLVE_END\])",
+        re.DOTALL,
+    )
+    replacement = f"{EVOLVE_START}\n\n{new_body.strip()}\n// [EVOLVE_END]"
+    new_source, count = pattern.subn(replacement, source)
+    if count == 0:
+        raise ValueError(f"EVOLVE markers not found in {path}")
+    return new_source
+
+
+# ---------------------------------------------------------------------------
+# Kernel bodies
+# ---------------------------------------------------------------------------
+
+# ── Broken kernel: syntactically invalid / will not compile ──────────────────
+BROKEN_KERNEL = r"""
+class MatmulXMXKernel;
+
+// BROKEN: placeholder kernel — intentionally non-compiling
+void sycl_matmul_kernel(sycl::half* A,
+                        sycl::half* B,
+                        float* C,
+                        int M_tiles, int K, int N_tiles,
+                        int lda, int ldb, int ldc) {
+
+    // BUG 1: default-constructing sycl::queue is invalid in this context
+    sycl::queue q;
+
+    // BUG 2: wrong nd_range dimensionality for a 2-D tiled kernel
+    sycl::range<1> global{ static_cast<size_t>(M_tiles * N_tiles) };
+
+    q.submit([&](sycl::handler& h) {
+        h.parallel_for<MatmulXMXKernel>(global,
+            [=](sycl::item<1> item) {
+                int idx = item.get_id(0);
+
+                // BUG 3: sub_group not obtained; joint_matrix ops will fail
+                joint_matrix<sycl::sub_group, sycl::half,
+                             use::a, TM, TK, layout::row_major> matA;
+
+                // BUG 4: calling an undeclared function
+                undeclared_xmx_mad(matA, A, B, C);
+            });
+    });
+
+    // BUG 5: missing q.wait_and_throw() — results would be unobserved
+}
+"""
+
+# ── Correct kernel: matches the original source ──────────────────────────────
+CORRECT_KERNEL = r"""
+class MatmulXMXKernel;
+
+// A: (M_tiles*TM) x K, row-major, stride lda=K
+// B: K x (N_tiles*TN), row-major, stride ldb=N_tiles*TN
+// C: (M_tiles*TM) x (N_tiles*TN), row-major, stride ldc=N_tiles*TN  (float32 output)
+void sycl_matmul_kernel(sycl::half* A,
+                        sycl::half* B,
+                        float* C,
+                        int M_tiles, int K, int N_tiles,
+                        int lda, int ldb, int ldc) {
+    sycl::queue& q = c10::xpu::getCurrentXPUStream().queue();
+
+    sycl::range<2> global{ static_cast<size_t>(M_tiles * SG_SIZE),
+                           static_cast<size_t>(N_tiles) };
+    sycl::range<2> local{ SG_SIZE, 1 };
+
+    q.submit([&](sycl::handler& h) {
+        h.parallel_for<MatmulXMXKernel>(sycl::nd_range<2>{global, local},
+            [=](sycl::nd_item<2> item) [[sycl::reqd_sub_group_size(SG_SIZE)]] {
+                namespace as = sycl::access;
+                auto sg = item.get_sub_group();
+                int tile_m = item.get_group(0);
+                int tile_n = item.get_group(1);
+
+                joint_matrix<sycl::sub_group, sycl::half, use::a, TM, TK, layout::row_major> matA;
+                joint_matrix<sycl::sub_group, sycl::half, use::b, TK, TN, layout::row_major> matB;
+                joint_matrix<sycl::sub_group, float, use::accumulator, TM, TN> matC;
+
+                joint_matrix_fill(sg, matC, 0.0f);
+
+                for (int k = 0; k < K / TK; ++k) {
+                    joint_matrix_load(sg, matA,
+                        sycl::address_space_cast<as::address_space::global_space, as::decorated::no>(
+                            A + tile_m * TM * lda + k * TK),
+                        static_cast<size_t>(lda));
+                    joint_matrix_load(sg, matB,
+                        sycl::address_space_cast<as::address_space::global_space, as::decorated::no>(
+                            B + k * TK * ldb + tile_n * TN),
+                        static_cast<size_t>(ldb));
+                    joint_matrix_mad(sg, matC, matA, matB, matC);
+                }
+
+                joint_matrix_store(sg, matC,
+                    sycl::address_space_cast<as::address_space::global_space, as::decorated::no>(
+                        C + tile_m * TM * ldc + tile_n * TN),
+                    static_cast<size_t>(ldc), layout::row_major);
+            });
+    });
+    q.wait_and_throw();
+}
+"""
+
+# ---------------------------------------------------------------------------
+# MCP client — real build_and_test
+# ---------------------------------------------------------------------------
+
+
+def _load_mcp_config(task_dir: Path) -> dict:
+    """
+    Look for MCP config in COPILOT_HOME/mcp-config.json first, then fall back
+    to .mcp.json starting from *task_dir* and walking up to home.
+    Returns the parsed JSON dict, or raises FileNotFoundError.
+    """
+    copilot_home = os.environ.get("COPILOT_HOME")
+    if copilot_home:
+        candidate = Path(copilot_home) / "mcp-config.json"
+        if candidate.exists():
+            return json.loads(candidate.read_text(encoding="utf-8"))
+
+    search = [task_dir] + list(task_dir.parents)
+    home = Path.home()
+    for directory in search:
+        candidate = directory / ".mcp.json"
+        if candidate.exists():
+            return json.loads(candidate.read_text(encoding="utf-8"))
+        if directory == home:
+            break
+    raise FileNotFoundError(
+        "No .mcp.json found in task directory or any parent up to $HOME. " "Use --sim-tools to skip the real MCP call."
+    )
+
+
+def _mcp_env(mcp_config: dict) -> dict[str, str]:
+    """Extract the env block from the first mcpServers entry."""
+    servers = mcp_config.get("mcpServers", {})
+    if not servers:
+        return {}
+    first = next(iter(servers.values()))
+    return first.get("env", {})
+
+
+async def _call_build_and_test_async(
+    task_dir: Path,
+    mcp_config: dict,
+    progress_cb,
+) -> tuple[bool, str]:
+    """
+    Invoke the real build_and_test MCP tool via fastmcp.Client.
+    Returns (success: bool, display_text: str).
+    """
+    try:
+        from fastmcp import Client
+    except ImportError:
+        raise RuntimeError(
+            "fastmcp is not installed in the current environment. " "Activate the project venv or pass --sim-tools."
+        )
+
+    last_progress: list[int] = [0]
+
+    async def _progress_handler(progress: float, total: float | None, message: str | None) -> None:
+        pct = int(progress / (total or 100) * 100)
+        if pct != last_progress[0]:
+            last_progress[0] = pct
+            progress_cb(pct)
+
+    async with Client(mcp_config, progress_handler=_progress_handler) as client:
+        result = await client.call_tool(
+            "build_and_test",
+            {"folder_path": str(task_dir)},
+        )
+
+    # structured_content holds the typed return dict {success, job_id, eval_log}
+    data: dict = result.structured_content or {}
+    job_id = data.get("job_id", "?")
+
+    # Flatten eval_log to a string
+    eval_log = data.get("eval_log") or ""
+    if isinstance(eval_log, list):
+        display_log = "\n".join(str(entry) for entry in eval_log if entry)
+    else:
+        display_log = str(eval_log) if eval_log else "(no log returned)"
+
+    # The MCP "success" flag means the job ran to completion, not that the
+    # build/tests passed.  Determine real outcome from the eval_log content:
+    # a build failure starts with "FAILED:" in the log.
+    job_completed = bool(data.get("success", not result.is_error))
+    build_failed = display_log.lstrip().startswith("FAILED:")
+    success = job_completed and not build_failed
+
+    print(f"{DIM}[debug] job_completed={job_completed}  build_failed={build_failed}  success={success}{RESET}\n")
+
+    header = f"[job_id: {job_id}]  status: {'SUCCESS' if success else 'FAILED'}\n"
+    return success, header + display_log
+
+
+def call_build_and_test_real(
+    task_dir: Path,
+    mcp_config: dict,
+) -> tuple[bool, str]:
+    """Synchronous wrapper around the async MCP call."""
+
+    spinner_chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    spin_idx = [0]
+    last_pct = [0]
+
+    def _progress(pct: int) -> None:
+        last_pct[0] = pct
+        char = spinner_chars[spin_idx[0] % len(spinner_chars)]
+        spin_idx[0] += 1
+        sys.stdout.write(f"\r  {DIM}{char} Running … {pct:3d}%{RESET}  ")
+        sys.stdout.flush()
+
+    result = asyncio.run(_call_build_and_test_async(task_dir, mcp_config, _progress))
+    sys.stdout.write(f"\r{' ' * 40}\r")  # clear spinner line
+    sys.stdout.flush()
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Simulated build_and_test outputs
+# ---------------------------------------------------------------------------
+
+BUILD_FAIL_OUTPUT = """\
+[build] icpx -fsycl -fsycl-targets=intel_gpu_lnl_m -std=c++20 \\
+        -I... matrix_mul_kernel.sycl -o matmul_kernel.so
+
+matrix_mul_kernel.sycl:27:17: error: no matching constructor for initialization of 'sycl::queue'
+    sycl::queue q;
+                ^
+note: candidate constructor not viable: requires device argument
+
+matrix_mul_kernel.sycl:30:5: error: no viable conversion from 'sycl::range<1>' to 'sycl::nd_range<2>'
+    sycl::range<1> global{ ... };
+    ^~~~~~~~~~~~~~
+
+matrix_mul_kernel.sycl:36:17: error: use of undeclared identifier 'undeclared_xmx_mad'
+                undeclared_xmx_mad(matA, A, B, C);
+                ^~~~~~~~~~~~~~~~~~
+
+3 errors generated.
+[build] FAILED (exit code 1)
+[test]  Skipped — build did not succeed."""
+
+BUILD_PASS_OUTPUT = """\
+[build] icpx -fsycl -fsycl-targets=intel_gpu_lnl_m -std=c++20 \\
+        -I... matrix_mul_kernel.sycl -o matmul_kernel.so
+
+[build] SUCCESS  (0 warnings, 0 errors)
+
+[test]  pytest task.py -x -q
+        test_correctness1  PASSED
+        test_correctness2  PASSED
+        test_benchmark1    PASSED
+        test_benchmark2    PASSED
+
+[test]  4 passed in 3.21s  ✔"""
+
+# ---------------------------------------------------------------------------
+# Simulation engine
+# ---------------------------------------------------------------------------
+
+
+def confirm_action(prompt: str, auto_approve: bool) -> bool:
+    """Ask the user for confirmation unless auto-approve flags are set."""
+    if auto_approve:
+        print(f"  {DIM}(auto-approved: {prompt}){RESET}")
+        return True
+    answer = input(f"  {YELLOW}{BOLD}?{RESET}  {prompt} [Y/n] ").strip().lower()
+    return answer in ("", "y", "yes")
+
+
+def run_simulation(
+    prompt: str,
+    task_dir: Path,
+    sycl_file: Path,
+    allow_all: bool,
+    no_ask_user: bool,
+    share: bool,
+    use_real_tools: bool,
+) -> int:
+    """
+    Drive the full simulated agent session.
+    Returns 0 on success, non-zero on failure.
+    """
+
+    # ── Load MCP config once (only needed for real tools) ────────────────────
+    mcp_config: dict | None = None
+    if use_real_tools:
+        try:
+            mcp_config = _load_mcp_config(task_dir)
+        except FileNotFoundError as exc:
+            print(f"{RED}error: {exc}{RESET}", file=sys.stderr)
+            return 2
+
+    # ── Session header ───────────────────────────────────────────────────────
+    banner("GitHub Copilot CLI — Simulated Agent Session", CYAN)
+    print(f"  {BOLD}Task directory:{RESET} {task_dir}")
+    print(f"  {BOLD}Target file:   {RESET} {sycl_file.relative_to(task_dir.parent)}")
+    print(
+        f"  {BOLD}Flags:         {RESET} "
+        f"allow_all={allow_all}  no_ask_user={no_ask_user}  share={share}  "
+        f"sim_tools={not use_real_tools}"
+    )
+    print()
+    section("User Prompt", YELLOW)
+    print(f"  {YELLOW}{prompt}{RESET}\n")
+    pause(0.5)
+
+    # ── Step 1: Read the current source ─────────────────────────────────────
+    section("Step 1 — Reading task file")
+    agent_say(
+        "I'll start by reading the current kernel source to understand the "
+        "EVOLVE region boundaries and the surrounding context."
+    )
+    pause(0.3)
+
+    tool_call("read_file", {"path": str(sycl_file.relative_to(task_dir.parent))})
+    source = read_file(sycl_file)
+    # Show only the EVOLVE region snippet
+    lines = source.splitlines()
+    evolve_lines = []
+    inside = False
+    for ln in lines:
+        if EVOLVE_START in ln:
+            inside = True
+        if inside:
+            evolve_lines.append(ln)
+        if EVOLVE_END in ln and inside:
+            break
+    snippet = "\n".join(evolve_lines[:6]) + "\n  ... (truncated)"
+    tool_result("OK — file read", snippet, success=True)
+    pause(0.4)
+
+    # ── Step 2: Inject broken kernel ─────────────────────────────────────────
+    section("Step 2 — Injecting initial (broken) kernel candidate")
+    agent_say(
+        "I'll replace the EVOLVE region with an initial kernel attempt. "
+        "This draft has several bugs that I expect the compiler to catch, "
+        "so I can use the error messages to guide my next iteration."
+    )
+    pause(0.3)
+
+    if not allow_all and not no_ask_user:
+        ok = confirm_action("Write broken kernel candidate to file?", auto_approve=False)
+        if not ok:
+            print(f"  {RED}Aborted by user.{RESET}")
+            return 1
+    else:
+        print(f"  {DIM}(--allow-all / --yolo: writing without confirmation){RESET}")
+
+    tool_call(
+        "edit_file",
+        {
+            "path": str(sycl_file.relative_to(task_dir.parent)),
+            "region": "[EVOLVE_START] … [EVOLVE_END]",
+            "new_content": BROKEN_KERNEL.strip(),
+        },
+    )
+    broken_source = replace_evolve_region(sycl_file, BROKEN_KERNEL)
+    sycl_file.write_text(broken_source, encoding="utf-8")
+    tool_result("OK — EVOLVE region updated with broken kernel", "", success=True)
+    pause(0.4)
+
+    # ── Step 3: build_and_test — expected to fail ────────────────────────────
+    section("Step 3 — Running build_and_test (expecting failure)")
+    agent_say(
+        "Let me compile and test the current candidate. I expect this to "
+        "fail; the error output will tell me exactly what to fix."
+    )
+    pause(0.3)
+
+    tool_call(
+        "build_and_test",
+        {
+            "folder_path": str(task_dir),
+        },
+    )
+
+    if use_real_tools:
+        assert mcp_config is not None
+        print(f"  {DIM}[real MCP call — connecting to KernelFoundry server …]{RESET}")
+        try:
+            success, output = call_build_and_test_real(task_dir, mcp_config)
+        except Exception as exc:
+            tool_result("ERROR — MCP call failed", str(exc), success=False)
+            return 1
+        tool_result(
+            "PASSED — build and tests succeeded" if success else "FAILED — see log",
+            output,
+            success=success,
+        )
+        if success:
+            # Broken kernel unexpectedly passed — warn but continue
+            print(f"  {YELLOW}warning: broken kernel passed unexpectedly; " f"proceeding to fix anyway.{RESET}\n")
+    else:
+        pause(0.6)
+        tool_result("FAILED — compilation errors", BUILD_FAIL_OUTPUT, success=False)
+
+    # ── Step 4: Analyse failures ─────────────────────────────────────────────
+    section("Step 4 — Analysing compiler diagnostics")
+    agent_say(
+        "Three errors identified:\n"
+        "  1. sycl::queue default-constructor is invalid — must obtain the XPU "
+        "     queue from c10::xpu::getCurrentXPUStream().queue().\n"
+        "  2. nd_range dimension mismatch — the kernel is 2-D (tile_m × tile_n) "
+        "     but was given a 1-D range.\n"
+        "  3. 'undeclared_xmx_mad' — must use the proper joint_matrix API: "
+        "     joint_matrix_load / joint_matrix_mad / joint_matrix_store.\n"
+        "I'll now rewrite the EVOLVE region with a correct XMX DPAS kernel."
+    )
+    pause(0.5)
+
+    # ── Step 5: Inject correct kernel ────────────────────────────────────────
+    section("Step 5 — Applying corrected kernel")
+
+    if not allow_all and not no_ask_user:
+        ok = confirm_action("Write corrected kernel to file?", auto_approve=False)
+        if not ok:
+            print(f"  {RED}Aborted by user.{RESET}")
+            return 1
+    else:
+        print(f"  {DIM}(--allow-all / --yolo: writing without confirmation){RESET}")
+
+    tool_call(
+        "edit_file",
+        {
+            "path": str(sycl_file.relative_to(task_dir.parent)),
+            "region": "[EVOLVE_START] … [EVOLVE_END]",
+            "new_content": CORRECT_KERNEL.strip(),
+        },
+    )
+    correct_source = replace_evolve_region(sycl_file, CORRECT_KERNEL)
+    sycl_file.write_text(correct_source, encoding="utf-8")
+    tool_result("OK — EVOLVE region updated with corrected kernel", "", success=True)
+    pause(0.4)
+
+    # ── Step 6: build_and_test — expected to pass ────────────────────────────
+    section("Step 6 — Running build_and_test (expecting success)")
+    agent_say(
+        "Re-running the full build + test suite with the corrected XMX DPAS " "kernel. All fixes have been applied."
+    )
+    pause(0.3)
+
+    tool_call(
+        "build_and_test",
+        {
+            "folder_path": str(task_dir),
+        },
+    )
+
+    if use_real_tools:
+        assert mcp_config is not None
+        print(f"  {DIM}[real MCP call — connecting to KernelFoundry server …]{RESET}")
+        try:
+            success, output = call_build_and_test_real(task_dir, mcp_config)
+        except Exception as exc:
+            tool_result("ERROR — MCP call failed", str(exc), success=False)
+            return 1
+        tool_result(
+            "PASSED — all tests green" if success else "FAILED — see log",
+            output,
+            success=success,
+        )
+        final_ok = success
+    else:
+        pause(0.7)
+        tool_result("PASSED — all tests green", BUILD_PASS_OUTPUT, success=True)
+        final_ok = True
+
+    # ── Session summary ───────────────────────────────────────────────────────
+    banner("Session Complete", GREEN if final_ok else RED)
+    agent_say(
+        "The EVOLVE region in matrix_mul_kernel.sycl has been successfully "
+        "updated with a correct XMX DPAS joint_matrix kernel for the "
+        "Xe2 (Lunar Lake) architecture.  All 4 test cases pass.\n\n"
+        "Key changes made:\n"
+        "  • Obtained the device queue via getCurrentXPUStream().queue()\n"
+        "  • Used 2-D nd_range<2> with SIMD16 sub-group size\n"
+        "  • Replaced placeholder with proper joint_matrix_load / "
+        "    joint_matrix_mad / joint_matrix_store calls\n"
+        "  • Added q.wait_and_throw() to synchronise results"
+    )
+
+    if share:
+        print(f"  {DIM}[--share] Session transcript would be uploaded to " f"copilot.github.com/sessions/…{RESET}\n")
+
+    return 0 if final_ok else 1
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="copilot-sim",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "-p",
+        "--prompt",
+        metavar="PROMPT",
+        help="Prompt string (overrides piped stdin)",
+    )
+    parser.add_argument(
+        "--allow-all",
+        action="store_true",
+        help="Auto-approve all agent actions",
+    )
+    parser.add_argument(
+        "--yolo",
+        action="store_true",
+        help="Alias for --allow-all; skip all safety checks",
+    )
+    parser.add_argument(
+        "--no-ask-user",
+        action="store_true",
+        help="Suppress interactive clarification questions",
+    )
+    parser.add_argument(
+        "--share",
+        nargs="?",
+        const=True,
+        default=False,
+        metavar="FILE",
+        help="Share session transcript after completion (optional path)",
+    )
+    parser.add_argument(
+        "--sim-tools",
+        action="store_true",
+        help="Use simulated (placeholder) tool output instead of the real MCP server",
+    )
+    parser.add_argument(
+        "--task-dir",
+        metavar="DIR",
+        default=None,
+        help="Path to the task directory (default: auto-detected)",
+    )
+    # ── Flags accepted for compatibility with the real Copilot CLI ───────────
+    # The CopilotCLIAgent always passes these; the simulator accepts and
+    # ignores them so it can be used as a drop-in replacement for `copilot`.
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="(compat) Resume a prior session; ignored by the simulator",
+    )
+    parser.add_argument(
+        "--no-auto-update",
+        action="store_true",
+        help="(compat) Disable auto-update; ignored by the simulator",
+    )
+    parser.add_argument(
+        "--output-format",
+        default="text",
+        help="(compat) Output format (text/json); ignored by the simulator",
+    )
+    return parser
+
+
+def resolve_task_dir(override: str | None) -> Path:
+    if override:
+        p = Path(override).expanduser().resolve()
+        if not p.is_dir():
+            print(f"{RED}error: task directory not found: {p}{RESET}", file=sys.stderr)
+            sys.exit(2)
+        return p
+
+    # Auto-detect: use the current working directory
+    cwd = Path.cwd().resolve()
+    if cwd.is_dir():
+        return cwd
+
+    print(f"{RED}error: cannot locate task directory. " f"Use --task-dir to specify it.{RESET}", file=sys.stderr)
+    sys.exit(2)
+
+
+def resolve_sycl_file(task_dir: Path) -> Path:
+    matches = list(task_dir.glob("*.sycl"))
+    if not matches:
+        print(f"{RED}error: no .sycl file found in {task_dir}{RESET}", file=sys.stderr)
+        sys.exit(2)
+    if len(matches) > 1:
+        print(f"{YELLOW}warning: multiple .sycl files found; using {matches[0].name}{RESET}", file=sys.stderr)
+    return matches[0]
+
+
+def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    # ── Resolve prompt ───────────────────────────────────────────────────────
+    prompt: str | None = args.prompt
+
+    if prompt is None:
+        if not sys.stdin.isatty():
+            prompt = sys.stdin.read().strip()
+        else:
+            parser.print_help()
+            print(
+                f"\n{RED}error: provide a prompt via -p or pipe.{RESET}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+    if not prompt:
+        print(f"{RED}error: empty prompt.{RESET}", file=sys.stderr)
+        sys.exit(2)
+
+    # ── Resolve paths ────────────────────────────────────────────────────────
+    task_dir = resolve_task_dir(args.task_dir)
+    sycl_file = resolve_sycl_file(task_dir)
+
+    # ── Consolidate flags ────────────────────────────────────────────────────
+    allow_all = args.allow_all or args.yolo
+    no_ask_user = args.no_ask_user or allow_all
+    use_real_tools = not args.sim_tools
+
+    # ── Run ──────────────────────────────────────────────────────────────────
+    exit_code = run_simulation(
+        prompt=prompt,
+        task_dir=task_dir,
+        sycl_file=sycl_file,
+        allow_all=allow_all,
+        no_ask_user=no_ask_user,
+        share=args.share,
+        use_real_tools=use_real_tools,
+    )
+    sys.exit(exit_code)
+
+
+if __name__ == "__main__":
+    main()

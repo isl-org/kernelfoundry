@@ -21,6 +21,7 @@ from kernelfoundry.algorithm.problem_logger import ProblemLogger
 import kernelfoundry.eval_pipeline.database as db
 from kernelfoundry.eval_pipeline.task import Task
 from kernelfoundry.eval_pipeline.tasks.task_runner import TaskRunner
+from kernelfoundry.eval_pipeline.utils.custom_task_helper import blocks_to_str
 from kernelfoundry.algorithm.evaluator import Evaluator
 from kernelfoundry.algorithm.prompts.prompt_evolution_integration import PromptEvolutionMixin
 from kernelfoundry.algorithm.answer_processor import AnswerProcessor
@@ -30,6 +31,7 @@ from kernelfoundry.algorithm.prompts.optimization_aware import (
     build_exploration_prompt,
     get_optimization_guidance_for_parent,
 )
+from kernelfoundry.algorithm.utils.token_usage import zero_token_usage
 
 
 def setup_logging(logdir: str, logging_level: int | str | None = None):
@@ -96,7 +98,7 @@ class Controller(PromptEvolutionMixin):
         # evolve_mode: if >1 branches
         self.evolve_mode = config.get("branches_per_iteration", 1) > 1
 
-        TaskRunner.init(use_queue=config.get("use_queue", True))
+        TaskRunner.init(use_queue=config.get("use_queue", True), gpu_arch=config.gpu_arch)
 
         self.resource_allocator = resource_allocator
         self.answer_processor = AnswerProcessor(
@@ -110,6 +112,7 @@ class Controller(PromptEvolutionMixin):
 
         self.llm_server = hydra.utils.instantiate(config.inference)
         print(f"Initiated LLM with config {config.inference}")
+        self._token_usage_totals = zero_token_usage()
 
         self.feedback_helper = FeedbackHelper(
             use_feedback_llm=config.use_feedback_llm,
@@ -211,7 +214,7 @@ class Controller(PromptEvolutionMixin):
 
     def evolve_prompt_and_inference(
         self, problem_name: str, ref_arch_src: str, trial: int, task: Optional["Task"] = None
-    ) -> (str, str, Program, str):
+    ) -> (str, str, Program, str, str):
         """
         Run a single iteration in a worker process
         Args:
@@ -283,17 +286,30 @@ class Controller(PromptEvolutionMixin):
             {"role": "user", "content": prompt},
         ]
         if self.resource_allocator is None:
-            llm_response, models_used = self.llm_server(messages, return_model_info=True, trial=trial)
+            llm_response, metadata = self.llm_server(
+                messages=messages,
+                trial=trial,
+            )
         else:
             with self.resource_allocator.reserve_server() as server_id:
-                llm_response, models_used = self.llm_server(
-                    messages, return_model_info=True, trial=trial, server_id=server_id
+                llm_response, metadata = self.llm_server(
+                    messages=messages,
+                    trial=trial,
+                    server_id=server_id,
                 )
-        assert len(llm_response) == 1, f"LLM must return one answer, received {len(llm_response)} from {models_used}"
+        assert (
+            len(llm_response) == 1
+        ), f"LLM must return one answer, received {len(llm_response)} from {metadata['model']}"
         llm_response = llm_response[0]
 
+        # add token usage to total
+        self._token_usage_totals += {
+            "input_tokens": metadata["input_tokens"],
+            "output_tokens": metadata["output_tokens"],
+        }
+
         print("Time for prompt sampling and inference:", time.time() - iteration_start)
-        return llm_response, prompt, parent, models_used[0], prompt_evolution_session_id
+        return llm_response, prompt, parent, metadata["model"], prompt_evolution_session_id
 
     def _apply_optimization_aware_prompting(
         self,
@@ -471,7 +487,7 @@ class Controller(PromptEvolutionMixin):
         Returns:
             Program: initial Program object
         """
-        code = next(iter(task.blocks["EVOLVE"].values()))
+        code = task.blocks["EVOLVE"]
         program0 = Program(id="", is_program0=True, code=code, language=self.config.language, task=task)
         return program0
 
@@ -520,15 +536,26 @@ class Controller(PromptEvolutionMixin):
             ]
             trial = problem_logger.trial  # trial to pass to the LLM server (for warmstart)
             if self.resource_allocator is None:
-                program_list, models_used = self.llm_server(messages=messages, return_model_info=True, trial=trial)
+                program_list, metadata = self.llm_server(
+                    messages=messages,
+                    trial=trial,
+                )
             else:
                 with self.resource_allocator.reserve_server() as server_id:
-                    program_list, models_used = self.llm_server(
-                        messages=messages, return_model_info=True, trial=trial, server_id=server_id
+                    program_list, metadata = self.llm_server(
+                        messages=messages,
+                        trial=trial,
+                        server_id=server_id,
                     )
-            custom_kernel_out_list.extend(program_list)
             prompt_list_new.extend([prompt for _ in range(len(program_list))])
-            model_list.extend(models_used)
+            model_list.extend([metadata["model"]] * len(program_list))
+            # token_usage already reflects the full request (including all completions);
+            # add it once to avoid double counting when num_completions > 1.
+            self._token_usage_totals += {
+                "input_tokens": metadata["input_tokens"],
+                "output_tokens": metadata["output_tokens"],
+            }
+            custom_kernel_out_list.extend(program_list)
 
         return custom_kernel_out_list, prompt_list_new, model_list
 
@@ -590,10 +617,7 @@ class Controller(PromptEvolutionMixin):
 
         # attach the config for this job to the custom task after saving to the database
         # The task object is passed to the workers which get access to the config for the job this way
-        task.config = OmegaConf.to_container(config, resolve=True)
-        # transfer has_build_step and has_reference_build_step from config to task
-        task.has_build_step = task.config.get("has_build_step", task.has_build_step)
-        task.has_reference_build_step = task.config.get("has_reference_build_step", True)
+        task.apply_config(config)
 
         if self.evolve_mode:
             # workaround for to ensure that the program database is problem-specific - reinitiate for every new problem
@@ -601,8 +625,12 @@ class Controller(PromptEvolutionMixin):
                 config.language, task_name, task_id=task_id, gpu_arch=config.gpu_arch, output_dir=config.logdir
             )
 
-        assert len(task.blocks["REFERENCE"]) == 1, "Multiple references are not supported yet"
-        reference = next(iter(task.blocks["REFERENCE"].values()))
+        reference = blocks_to_str(task.blocks["REFERENCE"]) if task.blocks.get("REFERENCE") else ""
+        if not reference and config.get("test_reference", True):
+            logging.warning(
+                "No REFERENCE block found in task, but test_reference=True. "
+                "The LLM will receive no reference code in its prompt."
+            )
 
         program0 = self.create_program0(task)
         # This is the raw output of the reference for the same task used to compute the runtime improvement
@@ -681,6 +709,15 @@ class Controller(PromptEvolutionMixin):
                     self.answer_processor(llm_response, trial, parent) for llm_response in custom_kernel_out_list
                 ]
                 prompt_evolution_session_ids = [None] * len(custom_kernel_out_list)  # No evolution for standard mode
+
+            # update token usage for job in database
+            if job_id is not None:
+                db.update_job_token_usage(
+                    job_id,
+                    input_tokens=self._token_usage_totals.input_tokens,
+                    output_tokens=self._token_usage_totals.output_tokens,
+                )
+
             problem_logger.log_prompt_list(prompt_list)
             logging.info(f"Time for generating all kernels {time.time() - tic}")
 
@@ -783,11 +820,18 @@ class Controller(PromptEvolutionMixin):
             result_list = "\n".join([str(res) for res in eval_results])
             logging.info(f"Results:\n{result_list}")
             logging.info(f"Stdout saved at {problem_logger.stdout_path_part}_v{selected_kernel_index}.txt")
-            shutil.copy(
-                f"{problem_logger.stdout_path_part}_v{selected_kernel_index}.txt",
-                f"{problem_logger.stdout_path_part}_best.txt",
-            )
-            logging.info(f"Stdout saved at {problem_logger.stdout_path_part}_best.txt")
+            # copy best stdout to a standardized _best.txt file if it exists
+            selected_stdout = f"{problem_logger.stdout_path_part}_v{selected_kernel_index}.txt"
+            if os.path.exists(selected_stdout):
+                shutil.copy(selected_stdout, f"{problem_logger.stdout_path_part}_best.txt")
+                logging.info(f"Stdout saved at {problem_logger.stdout_path_part}_best.txt")
+            else:
+                logging.warning(
+                    "No stdout was written for the selected version (%s), so there is no _best.txt "
+                    "for the next trial to read. This normally means evaluation failed before it "
+                    "produced any output; see the errors above for why.",
+                    selected_stdout,
+                )
 
             kernel_exec_result = eval_results[selected_kernel_index]
             kernel_exec_result.metadata["scores_versions"] = [res.perf_score for res in eval_results]
@@ -816,14 +860,15 @@ class Controller(PromptEvolutionMixin):
 
         # get the uuid of the best program
         programs_list = list(programs.values())
-        eval_results = [prog.kernel_exec_result for prog in programs_list if prog.kernel_exec_result is not None]
-        best_result_idx = select_best_solution(eval_results)
+        programs_with_result = [prog for prog in programs_list if prog.kernel_exec_result is not None]
+        program_eval_results = [prog.kernel_exec_result for prog in programs_with_result]
+        best_result_idx = select_best_solution(program_eval_results)
 
         # Update Job status to COMPLETE
         if job_id is not None:
             db.update_job_status(job_id, "COMPLETE", finished_at=datetime.now(timezone.utc))
 
-        return programs, programs_list[best_result_idx].id
+        return programs, programs_with_result[best_result_idx].id
 
     def evaluate_single(
         self,
