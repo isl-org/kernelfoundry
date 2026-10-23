@@ -1,12 +1,17 @@
 """Utility functions for the NiceGUI frontend, including database queries for jobs, kernels, and tasks."""
 
 import json
+import tempfile
 from datetime import datetime, timezone
 from typing import Optional
+from omegaconf import DictConfig
 from sqlalchemy import desc, func, select
 
 import kernelfoundry.eval_pipeline.database as db
+from kernelfoundry.algorithm.utils.kernelbench_dataset import create_custom_task_files
 from kernelfoundry.eval_pipeline.database.tables import Job, JobLog, Kernel, Task
+from kernelfoundry.eval_pipeline.utils.custom_task_helper import find_path, update_block
+from kernelfoundry.eval_pipeline.utils.memory_file_map import MemoryFileMap
 
 
 def normalize_runtime_stats(runtime_stats: dict, gpu_arch: Optional[str] = None) -> dict:
@@ -43,6 +48,38 @@ def normalize_runtime_stats(runtime_stats: dict, gpu_arch: Optional[str] = None)
 
     # 2-level format: {benchmark: {metrics}} - missing the GPU level.
     return {gpu: runtime_stats}
+
+
+# Keep in sync with the ProfilerFeedback.name values used as top-level keys of the legacy
+# (pre per-arch) `Kernel.profiler_data` shape, e.g. {"unitrace": ..., "vtune_ref": ...}.
+_KNOWN_PROFILER_NAMES = {"unitrace", "vtune", "ncu"}
+
+
+def normalize_profiler_data(profiler_data: Optional[dict], gpu_arch: Optional[str] = None) -> dict:
+    """Normalize the two shapes of `Kernel.profiler_data`/`profiler_data_detail` (and their
+    `_reference` counterparts) into the current one.
+
+    The database still contains rows in each of these shapes:
+      - {gpu_arch: {profiler_name: data, ...}}  (current format)
+      - {profiler_name: data, ...}               (legacy, single-arch-only format)
+
+    Returns the current, arch-nested shape in all cases; `{}` if `profiler_data` is empty.
+    The legacy shape is detected by its top-level keys being known profiler names (optionally
+    `_ref`-suffixed) rather than arch names. `gpu_arch` (kernel.gpu_arch, possibly
+    comma-separated) fills in the missing arch level for the legacy shape; falls back to
+    "unknown".
+    """
+    if not profiler_data:
+        return {}
+
+    def _is_profiler_key(key: str) -> bool:
+        base = key[:-4] if key.endswith("_ref") else key
+        return base in _KNOWN_PROFILER_NAMES
+
+    if all(_is_profiler_key(k) for k in profiler_data):
+        arch = gpu_arch.split(",")[0] if gpu_arch else "unknown"
+        return {arch: profiler_data}
+    return profiler_data
 
 
 def _get_job_sort_column(sort_by: Optional[str]):
@@ -286,6 +323,29 @@ def get_task_by_id(task_id: str) -> Task | None:
     """Retrieve a task by its ID."""
     with db.SessionRO() as session:
         return session.get(Task, task_id)
+
+
+def get_tarball_for_kernel(kernel: Kernel) -> bytes:
+    """Generate the tarball containing task files for a kernel, with its output code inserted."""
+    task = get_task_by_id(kernel.task_id)
+    if task.task_origin in ("KernelBench", "robust_kbench"):
+        # convert config to DictConfig
+        dictconfig = DictConfig(kernel.config)
+        # create custom task files on the fly from template
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Copy all files into temp directory and fill in reference and config
+            create_custom_task_files(tmpdir, dictconfig, kernel.task_name, task.reference_block, task.Level_ID)
+            memory_file_map = MemoryFileMap()
+            memory_file_map.from_path(tmpdir)
+    else:
+        # construct memory file map from task data
+        task_data = task.task_data
+        memory_file_map = MemoryFileMap()
+        memory_file_map.decode(task_data)
+    # find which file to evolve and insert kernel
+    evolve_file_path = find_path(memory_file_map, "EVOLVE")
+    update_block(memory_file_map, "EVOLVE", evolve_file_path, kernel.output_code)
+    return memory_file_map.to_tarball()
 
 
 def get_profiler_data_reference_by_job_id(job_id: int) -> tuple:

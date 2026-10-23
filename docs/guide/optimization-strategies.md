@@ -65,9 +65,24 @@ so an ensemble explores more of the design space than repeated calls to one mode
 Generate with an ensemble of a few strong models instead of a single model.
 ```
 
-**Or set it yourself:** list several servers under `inference`. See
-[`kernelfoundry/configs/inference/ensemble.yaml`](https://github.com/isl-org/kernelfoundry/blob/main/kernelfoundry/configs/inference/ensemble.yaml)
-for a worked example, and [Config parameters](config-parameters.md) for the fields.
+**Or set it yourself:** `inference` is always a small ensemble (`model_1`/`model_2`/`model_3`,
+extra slots disabled by default). Enable a slot by giving it a `provider` and `model`, and
+give `weights` a matching entry per slot (they're normalized automatically, so exact values
+don't matter, only their ratio):
+
+```yaml
+inference:
+  model_1:
+    provider: openai
+    model: gpt-5.4
+  model_2:
+    provider: anthropic
+    model: claude-sonnet-5
+  weights: [1, 1]
+```
+
+See [`kernelfoundry/configs/inference/server.yaml`](https://github.com/isl-org/kernelfoundry/blob/main/kernelfoundry/configs/inference/server.yaml)
+for the full schema, and [Config parameters](config-parameters.md) for the fields.
 
 ## Let the model write templated kernels
 
@@ -103,8 +118,7 @@ gives it a baseline to compare against.
 **Or set it yourself:**
 
 ```yaml
-eval_config:
-  profile_original_model: true
+profiler_reference: true
 ```
 
 Profiler feedback needs a profiler installed and non-root profiling enabled; see the README.

@@ -25,48 +25,16 @@ from kernelfoundry.eval_pipeline.utils.custom_task_helper import blocks_to_str
 from kernelfoundry.algorithm.evaluator import Evaluator
 from kernelfoundry.algorithm.prompts.prompt_evolution_integration import PromptEvolutionMixin
 from kernelfoundry.algorithm.answer_processor import AnswerProcessor
+from kernelfoundry.algorithm.utils.skills import load_skills_for_language, skills_as_prompt_sections
 from kernelfoundry.algorithm.prompts.feedback_llm import FeedbackHelper
 from kernelfoundry.algorithm.prompts.prompt_constructor import PromptConstructor, get_system_prompt
 from kernelfoundry.algorithm.prompts.optimization_aware import (
     build_exploration_prompt,
     get_optimization_guidance_for_parent,
 )
+from kernelfoundry.algorithm.utils.logging import setup_logging
+from kernelfoundry.algorithm.utils.reference_cache import load_cached_reference, store_reference
 from kernelfoundry.algorithm.utils.token_usage import zero_token_usage
-
-
-def setup_logging(logdir: str, logging_level: int | str | None = None):
-    """Setup logging including raw mode that stores logs in database.
-
-    Args:
-        logdir (str): Directory where controller.log file will be stored.
-        logging_level (int | str | None, optional): Logging level to use. Defaults to None.
-    """
-    if logging_level is None:
-        logging_level = logging.getLogger().level
-
-    def raw_root(message, *args, **kwargs):
-        logging.log(RAW, message, *args, **kwargs)
-
-    # Define the custom level
-    RAW = 25  # between INFO (20) and WARNING (30)
-    logging.addLevelName(RAW, "RAW")
-    logging.raw = raw_root
-
-    # Set up logging to console and file
-    log_file = Path(logdir) / "controller.log"
-    # Create file handler
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(logging_level)
-
-    # Create formatter
-    formatter = logging.Formatter("%(message)s")
-    file_handler.setFormatter(formatter)
-    # console_handler.setFormatter(formatter)
-
-    # Add handlers to root logger
-    root_logger = logging.getLogger()
-    root_logger.addHandler(file_handler)
-    root_logger.setLevel(logging_level)
 
 
 class Controller(PromptEvolutionMixin):
@@ -91,7 +59,7 @@ class Controller(PromptEvolutionMixin):
         self.config = config
         self.job_id = job_id
         self.task_id = task_id
-        setup_logging(self.config.logdir, logging_level=logging_level)
+        setup_logging(Path(config.logdir) / "controller.log", logging_level=logging_level)
         # track failures to avoid running 100 trials with a broken setup
         self.failures = 0
         self.max_failures = config.get("max_failures", 5)
@@ -120,7 +88,13 @@ class Controller(PromptEvolutionMixin):
             server_config=config.feedback_llm_config,
             use_docs_via_keywords=config.use_docs_via_keywords,
         )
-        print(f"Initiated feedback LLM with config: {config.feedback_llm_config}")
+        if config.use_feedback_llm:
+            print(f"Initiated feedback LLM with config: {config.feedback_llm_config}")
+
+        # The agentic path hands an agent the skill directory to read from. This one has no tools,
+        # so any skill it is given has to be inlined into the prompt. Empty unless the run's config
+        # names a skills directory.
+        skill_prompt_list = skills_as_prompt_sections(load_skills_for_language(config))
 
         self.prompt_constructor = PromptConstructor(
             config.language,
@@ -129,6 +103,7 @@ class Controller(PromptEvolutionMixin):
             reference_language=self.reference_language,
             mode=config.mode,
             use_feedback_llm=config.use_feedback_llm,
+            skill_prompt_list=skill_prompt_list,
         )
         print(f"Initiated prompt constructor: language: {config.language}, use diff: {config.prompt.diff_format}")
 
@@ -636,6 +611,9 @@ class Controller(PromptEvolutionMixin):
         # This is the raw output of the reference for the same task used to compute the runtime improvement
         # if there is no baseline data
         reference_test_result, build_result_reference = None, None
+        cached_reference = load_cached_reference(task, config)
+        if cached_reference is not None:
+            reference_test_result, build_result_reference = cached_reference
         programs = {program0.id: program0}
         results = defaultdict(list)  # for logging to the results.json file
 
@@ -691,15 +669,15 @@ class Controller(PromptEvolutionMixin):
                     for future in concurrent.futures.as_completed(futures):
                         try:
                             llm_response, prompt, parent, model_used, session_id = future.result()
-                            parent.task = program0.task  # set custom task attribute
-                            custom_kernel_out_list.append(llm_response)
-                            prompt_list.append(prompt)
-                            model_list.append(model_used)
-                            prompt_evolution_session_ids.append(session_id)
-                            child_list.append(self.answer_processor(llm_response, trial, parent))
                         except Exception as exc:
                             logging.error(f"LLM inference generated an exception: {exc}", exc_info=True)
-                            prompt_evolution_session_ids.append(None)  # Keep list aligned
+                            continue
+                        parent.task = program0.task  # set custom task attribute
+                        custom_kernel_out_list.append(llm_response)
+                        prompt_list.append(prompt)
+                        model_list.append(model_used)
+                        prompt_evolution_session_ids.append(session_id)
+                        child_list.append(self.answer_processor(llm_response, trial, parent))
                 assert len(prompt_list) > 0 and len(custom_kernel_out_list) > 0, "too many inference fails!"
             else:
                 custom_kernel_out_list, prompt_list, model_list = self.standard_prompt_and_inference(
@@ -745,6 +723,8 @@ class Controller(PromptEvolutionMixin):
                 build_result_reference = next(
                     (et.build_result_reference for et in eval_tasks if et.build_result_reference is not None), None
                 )
+                if cached_reference is None and reference_test_result is not None:
+                    store_reference(task, config, reference_test_result, build_result_reference, job_id)
 
             # Report fitness for prompt evolution (if enabled and in evolve mode)
             if self.evolve_mode and self.prompt_evolution_enabled:
@@ -848,6 +828,16 @@ class Controller(PromptEvolutionMixin):
 
             if config.stop_once_correct and kernel_exec_result.compiled and kernel_exec_result.correctness:
                 break
+
+            target_roofline_pct = config.get("target_roofline_pct")
+            if target_roofline_pct is not None and kernel_exec_result.compiled and kernel_exec_result.correctness:
+                roofline_pct_min = Program.extract_roofline_pct_min(kernel_exec_result.runtime_stats)
+                if roofline_pct_min is not None and roofline_pct_min >= target_roofline_pct:
+                    logging.info(
+                        f"Target roofline percentage {target_roofline_pct}% reached "
+                        f"(worst case {roofline_pct_min:.1f}%), stopping early."
+                    )
+                    break
 
             logging.info(f"Time total for trial {trial} {time.time() - tic_trial}")
 

@@ -8,7 +8,7 @@ Browse it in the web UI:
 
 ```bash
 kernelfoundry-gui          # needs the ui extra: pip install 'kernelfoundry[ui]'
-python start_gui.py        # equivalent, from a clone
+python -m kernelfoundry.gui        # equivalent, from a clone
 ```
 
 It serves `http://localhost:8885`. Find your run by the `task_name` and `job_name` you set in

@@ -27,6 +27,15 @@ meta_prompting:
   selection_temperature: 1.0
   max_prompts: 50
   output_subdir: "prompt_evolution"
+  inference:
+    _target_: kernelfoundry.algorithm.inference_server.InferenceServer
+    server_type: "openai"
+    model_name: "gpt-4.1"
+    max_tokens: 2000
+    timeout: 360  # 5 minutes
+    temperature: 0.0
+    num_completions: 1  # number of completions to generate
+    verbose: False
 
 # RAG
 rag: []

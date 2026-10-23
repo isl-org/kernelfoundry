@@ -1,4 +1,27 @@
-{# 
+{#
+-------- CODE FORMAT INSTRUCTIONS --------
+When the task has multiple EVOLVE blocks, each must be returned as its own labeled, fenced
+code section (matching the "### Block: <label> ###" headers used elsewhere in this prompt to
+show multi-block code) so the response can be mapped back onto the right block.
+#}
+{% macro code_format_instructions() %}
+{% if evolve_block_labels and evolve_block_labels|length > 1 %}
+This task has {{ evolve_block_labels|length }} separate evolve regions. Provide the complete, updated code for **every** region, each in its own labeled section, in this exact order and format:
+{% for label in evolve_block_labels %}
+### Block: {{ label }} ###
+```{{ language }}
+Code for this block here
+```
+{% endfor %}
+Do not omit or merge blocks; if you are not changing a block, repeat its existing code unchanged.
+{% else %}
+Provide the complete {{ language }} code in a code block:
+```{{ language }}
+Your code here
+```
+{% endif %}
+{% endmacro %}
+{#
 ======== IF REFERENCE IS A DESCRIPTION, NOT CODE, JUST INSERT =======
 #}
 {% set reference_or_description = 'description' %}
@@ -39,6 +62,12 @@ The triton code should have a function called `{{ function_name }}` which will l
 ## The user provided the following additional instructions for you:
 {{ user_instructions }}
 {% endif %}
+{% if skill_prompt_list %}
+## Reference material for this hardware and language
+{% for skill_prompt in skill_prompt_list %}
+{{ skill_prompt }}
+{% endfor %}
+{% endif %}
 {# 
 -------- RAG ------ 
 #}
@@ -54,12 +83,19 @@ This is the reference {{ ref_language }} implementation:
 ```
 {{ ref_code }}
 ```
-{% endif %} 
-{# 
-======= END OF INSTRUCTIONS IF REFERENCE PROVIDED ======= 
+{% endif %}
+{#
+======= END OF INSTRUCTIONS IF REFERENCE PROVIDED =======
 #}
-{# 
--------- INSPIRATIONS ------ 
+{#
+-------- PROMPT CACHE BREAKPOINT (idea §7.1a) ------
+Everything above (main instruction + reference code) is invariant across trials and
+branches, so it forms the cacheable prefix. The marker is emitted only when prompt
+caching is enabled; the Bedrock layer splits on it and never sends it to the model.
+#}
+{% if cache_breakpoint %}{{ cache_breakpoint }}{% endif %}
+{#
+-------- INSPIRATIONS ------
 #}
 {% if include_inspirations and inspirations%}
 ## Previous {{ language }} implementations with scores:
@@ -268,11 +304,7 @@ Please structure your response as follows:
     * Explain the requirements of writing an efficient {{ language }} kernel for the given task.
     * Explain your proposed kernel structure.
 2. {{ language }} code:
-    * Provide the complete {{ language }} code in a code block:
-```{{ language }}
-Your code here
-```
-
+{{ code_format_instructions() }}
 {% elif status == "error" %}
 1. Clearly comment on any fixes and optimizations you implement.
 2. If you change the kernel structure, explain why.
@@ -284,10 +316,7 @@ Please structure your response as follows:
     * Summarize the errors found in the previous kernel and log.
     * Explain your proposed changes.
 2. Improved {{ language }} code:
-    * Provide the complete, corrected {{ language }} code in a code block:
-```{{ language }}
-Your code here
-```
+{{ code_format_instructions() }}
 {% else %}
 1. Clearly comment on any performance optimizations you implement.
 2. If you change the kernel structure, explain why.
@@ -299,8 +328,5 @@ Please structure your response as follows:
     * Summarize the issues found in the previous kernel and log.
     * Explain your proposed changes and optimizations.
 2. Improved {{ language }} code:
-    * Provide the complete, improved {{ language }} code in a code block:
-```{{ language }}
-Your code here
-```
+{{ code_format_instructions() }}
 {% endif %}

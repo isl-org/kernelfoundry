@@ -4,6 +4,7 @@ Runs correctness tests, performance benchmarks, and profiler traces on custom
 and reference kernel implementations, optionally inside a container.
 """
 
+import base64
 import os
 import sys
 import asyncio
@@ -12,6 +13,7 @@ from celery import shared_task
 from dataclasses import asdict
 import logging
 import json
+import shlex
 import traceback
 import time
 
@@ -107,7 +109,10 @@ def _test_custom_task(task: Task) -> dict[str, TestResult]:
         option_variants.append(("reference", ["--ref"]))
 
     runtime_params = (task.hyperparameters or {}).get("runtime") or {}
-    runtime_args = [f"--runtime_params={json.dumps(runtime_params)}"] if runtime_params else []
+    # base64-encoded so the value survives profilers wrap cmd
+    runtime_args = (
+        [f"--runtime_params={base64.b64encode(json.dumps(runtime_params).encode()).decode()}"] if runtime_params else []
+    )
 
     env = safe_copy_env(
         add_vars={"KERNELFOUNDRY_TEST": "1"},
@@ -212,6 +217,7 @@ def _test_custom_task(task: Task) -> dict[str, TestResult]:
             #
             # Run the correctness tests
             #
+            correctness_output_file = Path(workspace_dir) / f"correctness_{key}.json"
             try:
                 cmd = (
                     [
@@ -222,6 +228,7 @@ def _test_custom_task(task: Task) -> dict[str, TestResult]:
                         "--color=no",
                         "-m",
                         "not performance",
+                        f"--correctness-out={correctness_output_file.as_posix()}",
                     ]
                     + options
                     + runtime_args
@@ -253,6 +260,14 @@ def _test_custom_task(task: Task) -> dict[str, TestResult]:
                 test_result.correctness_result = ProcessResult.create(result, message=result_msg)
                 toc = time.time()
                 logging.info(f"Correctness tests took {toc - tic:.2f} seconds")
+
+                # Read per-test correctness results from the output file.
+                try:
+                    with open(Path(task_dir) / f"correctness_{key}.json", "r") as f:
+                        test_result.correctness_result.output_data = {"correctness": json.load(f)}
+                except Exception as e:
+                    # Return code is left untouched: an unreadable file must not invalidate a correct run.
+                    test_result.correctness_result.message = f"Failed to read correctness output file: {str(e)}"
 
             except Exception as e:
                 test_result.correctness_result = ProcessResult(
@@ -336,14 +351,23 @@ def _test_custom_task(task: Task) -> dict[str, TestResult]:
             #
             # Run the tracing profilers
             #
-            if "custom" in key and not task.config.get("eval_config", {}).get("profile_custom_model", True):
+            if (
+                "custom" in key
+                and not task.config.get("eval_config", {}).get("profile_custom_model", True)
+                and not task.config.get("profiler_kernel")
+            ):
                 # skip profiling custom
                 ans[key] = test_result
                 continue
-            if "reference" in key and not task.config.get("eval_config", {}).get("profile_original_model", True):
+            if (
+                "reference" in key
+                and not task.config.get("eval_config", {}).get("profile_original_model", True)
+                and not task.config.get("profiler_reference")
+            ):
                 # skip profiling reference
                 ans[key] = test_result
                 continue
+            profiler_name = f"{key}_profiler_setup"
             try:
                 # Select profiler based on language (use ref_language for reference) and user selection from config
                 language = task.config.get("language", "")
@@ -379,11 +403,12 @@ def _test_custom_task(task: Task) -> dict[str, TestResult]:
                             "--itt",  # enable ITT markers
                         ]
                         + options
+                        + runtime_args
                         + [
                             "task.py",
                         ]
                     )
-                    cmd = profiler.wrap_cmd(" ".join(cmd))
+                    cmd = profiler.wrap_cmd(shlex.join(cmd))
                     logging.info(cmd)
 
                     if use_container:
@@ -426,7 +451,7 @@ def _test_custom_task(task: Task) -> dict[str, TestResult]:
                         )
 
             except Exception as e:
-                test_result.trace_results[profiler.name] = ProcessResult(
+                test_result.trace_results[profiler_name] = ProcessResult(
                     returncode=-1,
                     stdout="",
                     stderr="",

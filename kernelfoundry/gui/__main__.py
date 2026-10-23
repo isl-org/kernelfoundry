@@ -85,6 +85,21 @@ def main() -> None:
 
         patch(tmpdir)
 
+        # Force a reload instead of waiting on NiceGUI's reconnect when the tab regains focus.
+        ui.add_body_html(
+            """
+            <script>
+            document.addEventListener("visibilitychange", () => {
+                if (document.visibilityState === "visible" && window.did_handshake
+                        && window.socket && !window.socket.connected) {
+                    window.location.reload();
+                }
+            });
+            </script>
+        """,
+            shared=True,
+        )
+
         ui.run(
             host="0.0.0.0",
             port=8885,
@@ -93,6 +108,7 @@ def main() -> None:
             show=False,
             loop="asyncio",  # use asyncio loop to avoid the buserror problem with uvloop
             favicon=_load_favicon(),
+            reconnect_timeout=60,
         )
 
 

@@ -112,7 +112,7 @@ python -m kernelfoundry.algorithm run task=tasks/example_custom task_origin=cust
 `runs/kernels.sqlite3`, viewable in the UI:
 
 ```bash
-kernelfoundry-gui       # http://localhost:8885 (python start_gui.py from a clone)
+python -m kernelfoundry.gui     # starts on http://localhost:8885
 ```
 
 See [Understanding results](understanding-results.md) for how to read what you find there.

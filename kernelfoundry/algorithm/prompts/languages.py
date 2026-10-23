@@ -2,10 +2,10 @@
 Define extraction patterns, file endings, and profiler for all supported languages
 """
 
-SUPPORTED_LANGUAGES = ["cuda", "sycl", "triton", "ocl"]
+SUPPORTED_LANGUAGES = ["cuda", "sycl", "triton", "ocl", "cm", "vulkan"]
 
 # extraction patterns for code blocks, e.g. ```CUDA
-EXTRACT_CODE_LANGUAGES = ["cuda", "sycl", "python", "cpp", "triton", "ocl"]
+EXTRACT_CODE_LANGUAGES = ["cuda", "sycl", "python", "cpp", "triton", "ocl", "cm", "vulkan"]
 
 
 KERNEL_OPTIMIZATION_TIPS = {
@@ -82,5 +82,33 @@ KERNEL_OPTIMIZATION_TIPS = {
         "Use Appropriate Data Types: Use half (FP16) when precision allows - doubles throughput on many GPUs. Use native_* math functions (native_sqrt, native_divide) for faster, less precise operations. Use mad() for fused multiply-add. Size integer types appropriately (char, short, int).",
         "Memory Alignment: Align data structures to vector boundaries. Use __attribute__((aligned(N))) where N is 16, 32, or 64. Ensure global memory allocations are aligned for coalesced access.",
         "Use Built-in Functions: Prefer built-in functions (mad, fma, dot, cross, length) over manual implementations. Use fast_* variants (fast_normalize, fast_length) when precision allows. Use native_* for maximum speed with reduced precision.",
+    ],
+    "CM": [
+        "Use CM vector types (vector<T, N>, matrix<T, R, C>) for explicit SIMD instead of scalar loops. CM has no OpenCL sub-group lane dimension: one CM thread computes a full vector/tile, so do not port an OpenCL subgroup dimension literally.",
+        "Prefer cm_dpas<CM_PRECISION_HF, CM_PRECISION_HF, 8, REPEAT>() for matrix multiply to drive the XMX/DPAS systolic array. Structure the K-loop so it issues back-to-back dpas calls on operands already staged in registers/SLM, with no unrelated scalar work interleaved.",
+        "Use SLM for cooperative weight/tile decode across a work-group: assign decode work to producer threads, write results to an SLM ring, and let all consumer threads read from it, instead of every thread redundantly decoding/loading the same data. This is usually the single largest win available.",
+        "Do not blindly raise -Qxcm_register_file_size=256 to fit a bigger tile: it halves resident threads per XVE (e.g. 8 to 4 on BMG/Xe2), which is often a wash or a net loss for latency-sensitive kernels. Only adopt a larger register file after a controlled before/after measurement.",
+        'Use _GENX_MAIN_ for kernel entry point; annotate SVM/USM pointer args with [[type("svmptr_t")]] for the Intel NEO driver to recognize them as device pointer arguments.',
+        "Use lsc::block_2d_desc<T, RowsPerBlock, Rows, Cols> 2D block loads instead of multiple flat loads plus manual bounds clamping for activation/weight tiles. This removes register moves/clamp logic and can be a ~1.8-2x win; one descriptor is limited to 32 rows, so larger tiles need multiple descriptors.",
+        "Control thread granularity with GWS/LWS: one CM thread computes a full output tile, so tune LWS to match sub-slice thread capacity and keep enough resident work-groups per Xe-core for occupancy.",
+        "After any SLM write that a later phase reads, pair cm_slm_fence(CM_LOCAL_BARRIER) with cm_barrier() before the read. A bare cm_barrier() without the preceding fence is a real source of nondeterministic races, not just a performance issue.",
+        "Use half (FP16) or bfloat16 accumulation paths when precision allows — doubles throughput on many pipelines. Use cm_dp4a() for INT8 dot-product accumulation into INT32 for quantized inference kernels.",
+        "Screen every candidate for register spills: use -mCM_printregusage (works on BMG/ocloc, not on the Windows PTL driver) or watch for the compiler's 'Spill memory used = ...' warning. Treat any nonzero spill as a rejection unless a controlled measurement proves otherwise.",
+        "Reduce live registers by splitting large kernels into sub-functions and using vector_ref<T,N>/matrix_ref<T,R,C> (not plain C++ references) for callee output parameters. A single CM vector object is limited to well under 8KB, so large tiles need arrays of smaller vectors.",
+        "Use #pragma unroll N (or __attribute__((opencl_unroll_hint(N)))) for small fixed-iteration inner loops to increase instruction-level parallelism, but re-check register/spill impact afterward — larger tiles from unrolling are a common spill trigger.",
+    ],
+    "vulkan": [
+        "Tune Workgroup Size: Set local_size_x/y/z in the layout qualifier to match the hardware's subgroup/wave size (query via VkPhysicalDeviceSubgroupProperties). Typical sizes: 64-256 for compute-bound, 32-128 for memory-bound kernels.",
+        "Coalesced Access: Ensure invocations in the same subgroup access contiguous addresses in storage buffers (SSBOs). For row-major data, have adjacent gl_GlobalInvocationID.x values access adjacent memory locations.",
+        "Use Shared Memory Strategically: Use the shared keyword for data reused across invocations in a workgroup. Implement tile-based algorithms where each workgroup loads a tile into shared memory, synchronizes with barrier(), then processes it.",
+        "Minimize Global Memory Access: Cache frequently accessed values in local variables. Mark read-only SSBOs/images with readonly and write-only ones with writeonly so the driver can apply caching optimizations.",
+        "Avoid Bank Conflicts: Pad shared memory arrays to avoid stride conflicts, e.g. shared float tile[TILE][TILE + 1] for transpose-like access patterns.",
+        "Leverage Subgroup Operations: Use GL_KHR_shader_subgroup_arithmetic/ballot/shuffle extensions (subgroupAdd, subgroupBroadcast, subgroupShuffle) for warp/wave-level communication instead of round-tripping through shared memory and barrier().",
+        "Reduce Divergent Branches: Keep all invocations in a subgroup on the same execution path; restructure branchy code into uniform batches or use mix()/step() for predication instead of if/else.",
+        "Use Push Constants: Pass small, frequently-changing scalars (sizes, strides) via push constants (layout(push_constant) uniform) instead of an extra SSBO/UBO binding to avoid descriptor update overhead.",
+        "Minimize Synchronization: Reduce barrier() and memoryBarrierShared() calls to only where cross-invocation shared-memory visibility is actually required. Subgroup operations do not require a full barrier.",
+        "Use Appropriate Data Types: Prefer mediump/float16 (with GL_EXT_shader_16bit_storage / GL_EXT_shader_explicit_arithmetic_types_float16) when precision allows to reduce register and bandwidth pressure.",
+        "Loop Unrolling: Use small, fixed-iteration loops with compile-time-known trip counts so the SPIR-V compiler can unroll them; avoid data-dependent loop bounds in hot paths.",
+        "Minimize Host-Device Transfers: Keep intermediate buffers device-local across dispatches rather than mapping/copying back to host between kernel launches; batch dispatches into a single command buffer submission where possible.",
     ],
 }

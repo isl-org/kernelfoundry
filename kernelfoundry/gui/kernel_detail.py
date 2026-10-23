@@ -1,35 +1,33 @@
 """Page for showing detailed information about a kernel (language model, code, status, runtime stats, etc)"""
 
 from nicegui import ui
-from typing import Optional, Callable
 from pathlib import Path
 
-from kernelfoundry.gui.utils import get_id_by_uuid, get_kernel_by_id, get_task_by_id, normalize_runtime_stats
+from kernelfoundry.gui.utils import (
+    get_id_by_uuid,
+    get_kernel_by_id,
+    get_tarball_for_kernel,
+    get_task_by_id,
+    normalize_runtime_stats,
+)
 
 
-def kernel_detail_page(
-    kernel_id: int = 0,
-    include_download: bool = False,
-    get_tarball_fn: Optional[Callable] = None,
-):
+def kernel_detail_page(kernel_id: int = 0):
     """Display detailed info about the generated kernel (language model, code, status, runtime stats, etc)"""
     ui.traceviewer.patch_html()
 
     kernel = get_kernel_by_id(kernel_id)
 
     def download_task_files():
-        if get_tarball_fn:
-            tarball_bytes = get_tarball_fn(kernel)
-            # Trigger download
-            ui.download(tarball_bytes, f"kernel_{kernel_id}_task_files.tar.gz")
+        tarball_bytes = get_tarball_for_kernel(kernel)
+        ui.download(tarball_bytes, f"kernel_{kernel_id}_task_files.tar.gz")
 
     with ui.row().classes("items-end mb-4"):
         ui.label(f"Kernel Detail for ID: {kernel_id}").classes("text-xl")
         ui.button("Roofline analysis", on_click=lambda: ui.navigate.to(f"/roofline/{kernel_id}")).props(
             "icon=stacked_bar_chart flat no-caps size=md"
         )
-        if include_download and get_tarball_fn:
-            ui.button("Download Task Files", on_click=download_task_files).props("icon=download")
+        ui.button("Download Task Files", on_click=download_task_files).props("icon=download")
 
     if kernel:
         with ui.row().classes("grid grid-cols-8 w-full"):

@@ -7,10 +7,12 @@ from pathlib import Path
 from typing import Any
 
 import kernelfoundry.eval_pipeline.database as db
-from kernelfoundry.algorithm.controller import Controller, setup_logging
+from kernelfoundry.algorithm.utils.logging import setup_logging
+from kernelfoundry.algorithm.controller import Controller
 from kernelfoundry.algorithm.evaluator import Evaluator
 from kernelfoundry.algorithm.problem_logger import ProblemLogger
 from kernelfoundry.algorithm.schemas import Program
+from kernelfoundry.algorithm.utils.reference_cache import load_cached_reference, store_reference
 from kernelfoundry.algorithm.utils.validation_logs import collect_raw_logs_from_task
 from kernelfoundry.eval_pipeline.task import Task
 from kernelfoundry.eval_pipeline.tasks.task_runner import TaskRunner
@@ -28,7 +30,7 @@ def validate_task(
 ) -> dict[str, Any]:
     db.update_job_status(job_id, "VALIDATING", started_at=datetime.now(timezone.utc))
     # setup logger
-    setup_logging(config.logdir)
+    setup_logging(Path(config.logdir) / "validate.log")
     # initialize task runner
     TaskRunner.init(use_queue=config.get("use_queue", True), gpu_arch=config.gpu_arch)
     # set up problem logger
@@ -50,8 +52,15 @@ def validate_task(
     new_task = task.with_blocks({"EVOLVE": current_evolve_code_blocks}, keep_test_result_reference=True)
     current_evolve_code = blocks_to_str(current_evolve_code_blocks)
 
+    cached_reference = load_cached_reference(task, config)
+    if cached_reference is not None:
+        new_task.test_result_reference, new_task.build_result_reference = cached_reference
+
     # RUN
     exec_result, new_task = evaluator.run(new_task)
+
+    if cached_reference is None:
+        store_reference(new_task, config, new_task.test_result_reference, new_task.build_result_reference, job_id)
 
     if config.get("save_exec_result", False):
         save_exec_result_path = Path(config.results_dir) / config.job_name / config.task_name / "validate.json"

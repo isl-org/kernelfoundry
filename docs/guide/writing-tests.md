@@ -47,6 +47,25 @@ regress on the shapes you actually run in production. Parametrize with `@pytest.
 to cover several shapes.
 :::
 
+:::{warning}
+**Check correctness at the shape you benchmark.** If the correctness tests run on smaller inputs
+than the benchmark, any error that grows with size is invisible to the gate, and the search will
+happily find a kernel that is wrong where it is timed.
+
+A correctness test at the benchmark shape costs one extra run per evaluation and closes the hole.
+Where the full shape is expensive, hold the dimension the error accumulates over and shrink the
+others -- the check below keeps the full `K` and reduces `N`:
+
+```python
+def test_correctness_benchmark_shape(self, kernel, device):
+    M, K, N = 3584, 18944, 64      # benchmark K, smaller N
+    ...
+```
+
+A useful habit when adding such a test: confirm it *fails* on a kernel you know is wrong before
+trusting it. A gate that never rejects anything is not a gate.
+:::
+
 ## Benchmark test
 
 You must define **exactly one** benchmark, marked with `@pytest.mark.performance`. Additional

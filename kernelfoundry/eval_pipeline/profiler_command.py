@@ -145,6 +145,10 @@ class Unitrace(Profiler):
         self.group = group
         self.timeline = timeline
         self.unitrace_cmd = unitrace_cmd
+        # Keep the session name available to the pytest subprocess. The
+        # performance fixture uses UNITRACE_Session to resume/pause a profiler
+        # started with --start-paused.
+        self.session = uuid.uuid4().hex
 
     @property
     def name(self) -> str:
@@ -155,11 +159,14 @@ class Unitrace(Profiler):
         output_prefix = str(self.output_dir / "trace")
         # We assume that VectorEngineProfile and MemoryProfile are available, which is true for LNL, BMG, PTL
         timeline_flag = "--chrome-kernel-logging --chrome-itt-logging" if self.timeline else ""
-        session_flag = f"--start-paused --session {uuid.uuid4().hex}"
+        session_flag = f"--start-paused --session {self.session}"
         return f"{self.unitrace_cmd} {timeline_flag} {session_flag} --group {self.group} --metric-query --output-dir-path {self.output_dir.as_posix()} -o {output_prefix} {cmd}"
 
     def env_vars(self):
-        return {"KERNELFOUNDRY_unitrace_cmd": self.unitrace_cmd}
+        return {
+            "KERNELFOUNDRY_unitrace_cmd": self.unitrace_cmd,
+            "UNITRACE_Session": self.session,
+        }
 
     def read_output(self) -> dict[str, str]:
         """Read the profiler output into a dictionary that maps the filename to its content"""
@@ -174,7 +181,22 @@ class Unitrace(Profiler):
         if len(candidates) > 1:
             logging.warning(f"Multiple timeline files in {self.output_dir}: {[p.name for p in candidates]}")
         if candidates:
-            trace_data["timeline"] = json.loads(candidates[0].read_text().replace("\x00", ""))
+            raw = candidates[0].read_text().replace("\x00", "")
+            try:
+                trace_data["timeline"] = json.loads(raw)
+            except json.JSONDecodeError as e:
+                # A metric group that enumerates but fails to activate leaves an empty or
+                # truncated timeline behind. Raising here threw away the metric files sitting
+                # in the same directory and put a traceback in the log for something the
+                # caller already handles, so warn and carry on without the timeline.
+                logging.warning(
+                    "Timeline %s is not valid JSON (%s). Continuing without it; the pass "
+                    "most likely never started, so check that this device supports metric "
+                    "group %s.",
+                    candidates[0].name,
+                    e,
+                    getattr(self, "group", "<unknown>"),
+                )
         else:
             logging.warning(f"No timeline json file found in {self.output_dir}")
 
@@ -205,7 +227,7 @@ class OCLUnitrace(Unitrace):
         """Wrap the given command with unitrace profiling command for OpenCL using retry script"""
         output_prefix = str(self.output_dir / "trace")
         timeline_flag = "--chrome-kernel-logging --chrome-itt-logging" if self.timeline else ""
-        session_flag = f"--start-paused --session {uuid.uuid4().hex}"
+        session_flag = f"--start-paused --session {self.session}"
 
         # The retry script is copied to self.output_dir by prepare() before this is called,
         # so the path is valid both on the host and inside any container where output_dir is mounted.
@@ -228,10 +250,25 @@ class NCU(Profiler):
         if shutil.which(self.ncu_cmd) is None:
             return (
                 f"{self.ncu_cmd} is not on PATH. It ships with the CUDA toolkit; add the toolkit's "
-                "bin directory to PATH, or set eval_config.profile_custom_model: false to run "
-                "without profiling."
+                "bin directory to PATH, or set profiler_kernel: null to run without profiling."
             )
         return None
+
+    @staticmethod
+    def _non_root_profiling_enabled() -> bool:
+        """Whether the NVIDIA driver has been configured to let non-root users read perf counters."""
+        sys_minors = Path("/proc/driver/nvidia-caps/sys-minors")
+        if not sys_minors.is_file():
+            return False
+        try:
+            for line in sys_minors.read_text().splitlines():
+                parts = line.split()
+                if len(parts) == 2 and parts[0] == "profiler-device":
+                    cap_device = Path(f"/dev/nvidia-caps/nvidia-cap{parts[1]}")
+                    return cap_device.exists() and os.access(cap_device, os.R_OK)
+        except OSError:
+            return False
+        return False
 
     def wrap_cmd(self, cmd: str) -> str:
         """Wrap the given command with NCU profiling command.
@@ -245,7 +282,7 @@ class NCU(Profiler):
         """
         output_file = self.output_dir / "ncu_report.csv"
         ncu = f"{self.ncu_cmd} --set detailed --csv --log-file {output_file.as_posix()} {cmd}"
-        if os.name == "nt":
+        if os.name == "nt" or self._non_root_profiling_enabled():
             return ncu
         # Note that sudo-rs which is used in ubuntu 25.10 does not support --preserve-env
         return f"""sudo -E env "PYTHONPATH=$PYTHONPATH" {ncu}"""
@@ -411,29 +448,48 @@ _PROFILER_MAPPING = {
     ("cuda", "ncu"): [NCU],
     ("pytorch", "ncu"): [NCU],
     ("pytorch", "unitrace"): _UNITRACE_PASSES,
+    ("pytorch", "vtune"): [VTune],
     ("triton", "ncu"): [NCU],
     ("triton", "unitrace"): _UNITRACE_PASSES,
+    ("triton", "vtune"): [VTune],
+    ("cm", "vtune"): [VTune],
+    ("cm", "unitrace"): [
+        partial(OCLUnitrace, group="ComputeBasic"),
+        partial(OCLUnitrace, group="MemoryProfile"),
+        partial(OCLUnitrace, group="VectorEngineProfile"),
+    ],
 }
 
 # Default profiler for each language
 _DEFAULT_PROFILERS = {
     "sycl": "unitrace",
     "ocl": "vtune",
+    "cm": "unitrace",
     "cuda": "ncu",
 }
 
 
 def get_profilers(language: str, arch: str, profiler_type: str | None = None) -> list[type[Profiler]]:
-    """Get the appropriate profiler class based on user-specified profiler type or language & GPU architecture."""
-    language = language.lower()
+    """Get the appropriate profiler class based on user-specified profiler type or language & GPU architecture.
 
-    if profiler_type is None:
+    Returns an empty list if no profiler is configured or available for this language (profiling is skipped).
+    """
+    language = language.lower()
+    if profiler_type is not None:
+        profiler_type = profiler_type.lower()
+
+    # "default" resolves to the language's default profiler. None always means
+    # "no profiler configured" and must short-circuit to no profiling, regardless of language.
+    if profiler_type == "default":
         if language in ["pytorch", "triton"]:
             gpu_arch_is_cuda = arch in VALID_CUDA_ARCHS
             return [NCU] if gpu_arch_is_cuda else _UNITRACE_PASSES
         profiler_type = _DEFAULT_PROFILERS.get(language)
 
-    key = (language, profiler_type.lower() if profiler_type else None)
+    if profiler_type is None:
+        return []
+
+    key = (language, profiler_type)
     if key in _PROFILER_MAPPING:
         return _PROFILER_MAPPING[key]
 

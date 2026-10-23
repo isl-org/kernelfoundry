@@ -23,6 +23,7 @@ class EvalResult(BaseModel):
 
     compiled: bool = False
     correctness: bool = False
+    correctness_stats: dict = {}  # per-shape correctness, recorded whether or not the task as a whole was correct
     metadata: dict = {}
     runtime: float = -1.0  # in us, only recorded if we decide to measure performance
     runtime_stats: dict = {}  # only recorded if we decide to measure performance
@@ -115,6 +116,7 @@ class EvalResult(BaseModel):
         return {
             "compiled": self.compiled,
             "correctness": self.correctness,
+            "correctness_stats": self.correctness_stats,
             "metadata": self.metadata,
             "runtime": self.runtime,
             "runtime_stats": self.runtime_stats,
@@ -245,6 +247,31 @@ class Program:
             ]
 
     @staticmethod
+    def extract_roofline_pct_min(runtime_stats: dict) -> float | None:
+        """Find the worst (minimum) roofline percentage nested anywhere in a runtime_stats dict.
+
+        runtime_stats can be shaped either as {benchmark_name: stats} (single GPU arch) or
+        {gpu_arch: {benchmark_name: stats}} (combined across archs, see combine_gpu_arch_results).
+        Each per-benchmark `stats` dict may carry a "roofline" sub-dict (see
+        profiler_feedback.compute_roofline_summary) with a "roofline_pct" value. Walking generically
+        handles both shapes today and any deeper per-shape nesting added in the future.
+        """
+        values: list[float] = []
+
+        def _walk(node):
+            if not isinstance(node, dict):
+                return
+            roofline = node.get("roofline")
+            if isinstance(roofline, dict) and roofline.get("roofline_pct") is not None:
+                values.append(roofline["roofline_pct"])
+            else:
+                for v in node.values():
+                    _walk(v)
+
+        _walk(runtime_stats or {})
+        return float(min(values)) if values else None
+
+    @staticmethod
     def populate_kernel_from_exec_result(kernel: Kernel, exec_result: EvalResult):
         kernel.eval_log = exec_result.eval_log
         kernel.status = exec_result.get_status()
@@ -253,30 +280,43 @@ class Program:
         kernel.improve_over_native = exec_result.runtime_improvement
         kernel.improve_over_compile = exec_result.improve_over_compile
         kernel.runtime_stats = exec_result.runtime_stats or None
+        kernel.roofline_pct_min = Program.extract_roofline_pct_min(exec_result.runtime_stats)
         if exec_result.profiler_data:
+            # exec_result.profiler_data is keyed by gpu arch: {gpu_arch: {profiler_name: data, ...}}
             custom_profiler_data = {}
             custom_profiler_data_detail = {}
             reference_profiler_data = {}
             reference_profiler_data_detail = {}
-            for k, v in exec_result.profiler_data.items():
-                if k.endswith("_ref"):
-                    reference_profiler_data[k[:-4]] = v
-                else:
-                    custom_profiler_data[k] = v
-            # Separate large profiler data
-            for small_data, large_data in [
-                (custom_profiler_data, custom_profiler_data_detail),
-                (reference_profiler_data, reference_profiler_data_detail),
-            ]:
-                for profiler_k, data_dict in small_data.items():
-                    # The timeline and lineinfo can be very large, so separate them
-                    for key in ("timeline", "lineinfo"):
-                        if key in data_dict and data_dict[key] is not None:
-                            if large_data.get(profiler_k) is None:
-                                large_data[profiler_k] = {}
-                            large_data[profiler_k][key] = data_dict[key]
-                            # Remove large data from small_data
-                            del data_dict[key]
+            for arch, arch_profiler_data in exec_result.profiler_data.items():
+                arch_custom, arch_custom_detail = {}, {}
+                arch_reference, arch_reference_detail = {}, {}
+                for k, v in arch_profiler_data.items():
+                    if k.endswith("_ref"):
+                        arch_reference[k[:-4]] = v
+                    else:
+                        arch_custom[k] = v
+                # Separate large profiler data
+                for small_data, large_data in [
+                    (arch_custom, arch_custom_detail),
+                    (arch_reference, arch_reference_detail),
+                ]:
+                    for profiler_k, data_dict in small_data.items():
+                        # The timeline and lineinfo can be very large, so separate them
+                        for key in ("timeline", "lineinfo"):
+                            if key in data_dict and data_dict[key] is not None:
+                                if large_data.get(profiler_k) is None:
+                                    large_data[profiler_k] = {}
+                                large_data[profiler_k][key] = data_dict[key]
+                                # Remove large data from small_data
+                                del data_dict[key]
+                if arch_custom:
+                    custom_profiler_data[arch] = arch_custom
+                if arch_custom_detail:
+                    custom_profiler_data_detail[arch] = arch_custom_detail
+                if arch_reference:
+                    reference_profiler_data[arch] = arch_reference
+                if arch_reference_detail:
+                    reference_profiler_data_detail[arch] = arch_reference_detail
             kernel.profiler_data = custom_profiler_data if custom_profiler_data else None
             kernel.profiler_data_detail = custom_profiler_data_detail if custom_profiler_data_detail else None
             kernel.profiler_data_reference = reference_profiler_data if reference_profiler_data else None

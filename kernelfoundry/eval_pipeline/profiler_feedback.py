@@ -5,6 +5,7 @@ import re
 import io
 import csv
 import json
+import math
 from collections import OrderedDict
 from kernelfoundry.eval_pipeline.utils.performance_analysis import *
 from kernelfoundry.eval_pipeline.utils.hardware_info import HardwareRoofs
@@ -35,6 +36,93 @@ Your kernel has been analyzed with a profiler. Here is a summary of the results:
 """
 
 PROFILER_ANALYSIS_INTRO = "Your code has been analyzed with a profiler. Here is a summary of the results:"
+
+# Sentinel key used when a profiler backend cannot attribute its roofline data to individual
+# benchmarks (pytest tests) - the one computed result applies to every benchmark.
+ROOFLINE_ALL_BENCHMARKS_KEY = "_all"
+
+
+def _finite_or_none(value: float | None) -> float | None:
+    """Treat NaN/Inf (e.g. from 0/0 or x/0 divisions in profiler metrics) as missing data."""
+    if value is None or not math.isfinite(value):
+        return None
+    return value
+
+
+def _roofline_pct_from_bound(bound: str | None, compute_pct: float | None, membw_pct: float | None) -> float | None:
+    """Pick the % of peak that matters given the bound classification.
+
+    Compute-bound kernels are judged against their peak compute, and memory-bound kernels
+    against peak memory bandwidth. For balanced/unknown kernels takes the worse of the two.
+    """
+    compute_pct = _finite_or_none(compute_pct)
+    membw_pct = _finite_or_none(membw_pct)
+    if bound and bound.startswith("compute"):
+        return compute_pct if compute_pct is not None else membw_pct
+    if bound in ("memory", "memory_latency"):
+        return membw_pct if membw_pct is not None else compute_pct
+    values = [v for v in (compute_pct, membw_pct) if v is not None]
+    return min(values) if values else None
+
+
+def compute_analytical_roofline_pct(entry: dict, runtime_ms: float | None, worker_info: dict) -> dict | None:
+    """Compute a roofline summary dict from an agent-derived ideal FLOPs/bytes ``entry``.
+
+    Unlike :func:`compute_roofline_summary`, which measures achieved instructions/bytes per
+    second from profiler counters, ``entry`` describes the minimum work implied by the
+    reference's math and the benchmark's shapes (see ``skills/analytical-roofline``). The
+    resulting percentage is therefore independent of how many instructions the generated
+    kernel itself happens to execute. Returns ``None`` if hardware roofs, runtime or usable
+    flops/bytes are unavailable.
+    """
+    roofs = get_roofs(worker_info)
+    if roofs is None or not runtime_ms or not math.isfinite(runtime_ms) or runtime_ms <= 0:
+        return None
+    runtime_s = runtime_ms / 1000.0
+
+    compute_pct = None
+    flops = entry.get("flops")
+    peak_flops = roofs.peak_flops(str(entry.get("dtype") or "")) if entry.get("dtype") else None
+    if flops and peak_flops:
+        compute_pct = 100 * (flops / runtime_s) / peak_flops
+
+    membw_pct = None
+    bytes_total = (entry.get("bytes_read") or 0) + (entry.get("bytes_write") or 0)
+    if bytes_total and roofs.GPU_MEMORY_BYTE_READ:
+        achieved_gbps = (bytes_total / 1e9) / runtime_s
+        membw_pct = 100 * achieved_gbps / roofs.GPU_MEMORY_BYTE_READ
+
+    roofline_pct = _roofline_pct_from_bound(entry.get("bound"), compute_pct, membw_pct)
+    if roofline_pct is None:
+        return None
+    compute_pct = _finite_or_none(compute_pct)
+    membw_pct = _finite_or_none(membw_pct)
+    return {
+        "bound": entry.get("bound"),
+        "compute_pct": round(float(compute_pct), 1) if compute_pct is not None else None,
+        "membw_pct": round(float(membw_pct), 1) if membw_pct is not None else None,
+        "roofline_pct": round(float(roofline_pct), 1),
+        "source": "analytical",
+    }
+
+
+def _worst_roofline_candidate(
+    candidates: list[tuple[float, str | None, float | None, float | None]],
+) -> dict | None:
+    """Reduce a list of (roofline_pct, bound, compute_pct, membw_pct) tuples to the worst one."""
+    candidates = [c for c in candidates if math.isfinite(c[0])]
+    if not candidates:
+        return None
+    roofline_pct, bound, compute_pct, membw_pct = min(candidates, key=lambda c: c[0])
+    compute_pct = _finite_or_none(compute_pct)
+    membw_pct = _finite_or_none(membw_pct)
+    return {
+        "bound": bound,
+        # cast to float first for psycopg2 compatibility
+        "compute_pct": round(float(compute_pct), 1) if compute_pct is not None else None,
+        "membw_pct": round(float(membw_pct), 1) if membw_pct is not None else None,
+        "roofline_pct": round(float(roofline_pct), 1),
+    }
 
 
 class ProfilerFeedback:
@@ -107,6 +195,18 @@ class ProfilerFeedback:
         data = self.collate_data(outputs)
         feedback = self.create_feedback(data, worker_info)
         return data, feedback
+
+    def compute_roofline_summary(self, raw_data: dict, worker_info: dict) -> dict[str, dict] | None:
+        """Summarize roofline performance per benchmark from this profiler's collated data.
+
+        Returns a mapping from benchmark label to a ``{"bound", "compute_pct", "membw_pct",
+        "roofline_pct"}`` dict (the worst-case kernel within that benchmark), or ``None`` if this
+        backend doesn't compute structured roofline numbers. Benchmark labels should match the
+        keys used in ``EvalResult.runtime_stats`` where possible; backends that can't attribute
+        data to individual benchmarks should key their one result under
+        :data:`ROOFLINE_ALL_BENCHMARKS_KEY` instead.
+        """
+        return None
 
 
 class UnitraceProfilerFeedback(ProfilerFeedback):
@@ -339,6 +439,59 @@ class UnitraceProfilerFeedback(ProfilerFeedback):
         results["bound"] = bound
 
         return kernel_name, results
+
+    def compute_roofline_summary(self, raw_data: dict, worker_info: dict) -> dict[str, dict] | None:
+        """Summarize roofline performance per benchmark from Unitrace's collated data.
+
+        Benchmark labels are the pytest node ids embedded in ITT "model run loop::<label>"
+        markers by the autouse ``profiler_test_label`` fixture in conftest.py, which are the
+        same node ids used as keys in ``EvalResult.runtime_stats`` - so segments map 1:1 onto
+        benchmarks. Runs with no matching ITT markers fall back to
+        :data:`ROOFLINE_ALL_BENCHMARKS_KEY`.
+        """
+        roofs = get_roofs(worker_info)
+        if roofs is None or not raw_data:
+            return None
+
+        segments = raw_data.get("segments") or {ROOFLINE_ALL_BENCHMARKS_KEY: raw_data}
+        results: dict[str, dict] = {}
+        for segment_label, segment_data in segments.items():
+            df_compute_basic, df_memory_profile, df_vector_engine_profile = self._read_metrics(segment_data)
+            if df_compute_basic is None:
+                continue
+            candidates: list[tuple[float, str | None, float | None, float | None]] = []
+            for kernel_name, group in df_compute_basic.groupby("Kernel"):
+                compute_basic = get_median_row(group)
+                gpu_time = compute_basic["GpuTime[ns]"]
+                memory_profile = (
+                    get_row_with_closest_metric(df_memory_profile[df_memory_profile["Kernel"] == kernel_name], gpu_time)
+                    if df_memory_profile is not None
+                    else pd.Series(dtype=float)
+                )
+                vector_engine_profile = (
+                    get_row_with_closest_metric(
+                        df_vector_engine_profile[df_vector_engine_profile["Kernel"] == kernel_name], gpu_time
+                    )
+                    if df_vector_engine_profile is not None
+                    else pd.Series(dtype=float)
+                )
+                _, analysis = self.analyze_kernel(compute_basic, memory_profile, vector_engine_profile, roofs)
+                bound = analysis.get("bound")
+                alu_util = analysis.get("alu_util") or []
+                compute_pct = max((a["util_pct"] for a in alu_util), default=None)
+                membw_pct = analysis.get("gmem_bandwidth_pct")
+                roofline_pct = _roofline_pct_from_bound(bound, compute_pct, membw_pct)
+                if roofline_pct is not None:
+                    candidates.append((roofline_pct, bound, compute_pct, membw_pct))
+            summary = _worst_roofline_candidate(candidates)
+            if summary is not None:
+                # "default" is the fallback label used when no ITT markers were found at all
+                # (e.g. user-defined benchmarking without the standard fixtures) - treat it the
+                # same as "no per-benchmark attribution available".
+                key = ROOFLINE_ALL_BENCHMARKS_KEY if segment_label == "default" else segment_label
+                results[key] = summary
+
+        return results or None
 
     def _create_feedback_for_single_run(self, data: dict, worker_info: dict) -> str:
         df_compute_basic, df_memory_profile, df_vector_engine_profile = self._read_metrics(data)
@@ -1182,6 +1335,76 @@ class VTuneProfilerFeedback(ProfilerFeedback):
             logging.exception("Error creating VTune profiler feedback: %s", e)
             return ""
 
+    def compute_roofline_summary(self, raw_data: dict, worker_info: dict) -> dict[str, dict] | None:
+        """Summarize roofline performance from VTune's collated counter data.
+
+        VTune's counters aren't segmented per benchmark today, so the one result computed here
+        is returned under :data:`ROOFLINE_ALL_BENCHMARKS_KEY` and applies to every benchmark.
+        """
+        roofs = get_roofs(worker_info)
+        if roofs is None or not raw_data:
+            return None
+
+        candidates: list[tuple[float, str | None, float | None, float | None]] = []
+        counters = raw_data.get("counters") or {}
+        for name, cols in counters.items():
+            if self._is_overhead_kernel(name):
+                continue
+            m = self._build_metrics(cols)
+            total_time_s = m.get("total_time_s")
+            if not total_time_s:
+                continue
+            total_time_ns = total_time_s * 1e9
+            compute_rates = []
+            for count_key, roof_key in (
+                ("alu0_instr_count", "XVE_INST_EXECUTED_ALU0_ALL"),
+                ("alu1_instr_count", "XVE_INST_EXECUTED_ALU1_ALL"),
+                ("xmx_instr_count", "XVE_INST_EXECUTED_ALU2_ALL"),
+            ):
+                count = m.get(count_key)
+                roof = roofs.get(roof_key)
+                if count is not None and roof:
+                    compute_rates.append(100 * count / (total_time_ns * roof))
+            compute_pct = max(compute_rates) if compute_rates else None
+            read_bw = m.get("gpu_memory_bw_read_gbps") or 0
+            write_bw = m.get("gpu_memory_bw_write_gbps") or 0
+            membw_pct = 100 * (read_bw + write_bw) / roofs.GPU_MEMORY_BYTE_READ if roofs.GPU_MEMORY_BYTE_READ else None
+            bound_raw = self._determine_bound(m)
+            bound = (
+                "compute"
+                if bound_raw.startswith("compute")
+                else "memory" if bound_raw == "memory_latency" else "balanced"
+            )
+            roofline_pct = _roofline_pct_from_bound(bound, compute_pct, membw_pct)
+            if roofline_pct is not None:
+                candidates.append((roofline_pct, bound, compute_pct, membw_pct))
+
+        summary = _worst_roofline_candidate(candidates)
+        if summary is None:
+            return None
+        return {ROOFLINE_ALL_BENCHMARKS_KEY: summary}
+
+
+# Profiler feedback classes that override compute_roofline_summary, keyed by ProfilerFeedback.name.
+_ROOFLINE_PROFILER_CLASSES: dict[str, type[ProfilerFeedback]] = {
+    "unitrace": UnitraceProfilerFeedback,
+    "vtune": VTuneProfilerFeedback,
+}
+
+
+def compute_roofline_summary(profiler_name: str, raw_data: dict, worker_info: dict) -> dict[str, dict] | None:
+    """Summarize roofline performance per benchmark for one profiler run.
+
+    Dispatches to the profiler-specific implementation (see ``ProfilerFeedback.compute_roofline_summary``
+    and its overrides on ``UnitraceProfilerFeedback``/``VTuneProfilerFeedback``), keyed by
+    ``profiler_name`` (i.e. ``ProfilerFeedback.name``, the same key used in ``EvalResult.profiler_data``).
+    Returns None for backends without structured roofline support (e.g. NCU).
+    """
+    feedback_cls = _ROOFLINE_PROFILER_CLASSES.get(profiler_name)
+    if feedback_cls is None:
+        return None
+    return feedback_cls().compute_roofline_summary(raw_data, worker_info)
+
 
 def get_reference_language_for_profiling(config) -> str:
     """Get the reference language for profiler feedback based on the current language."""
@@ -1202,29 +1425,42 @@ _PROFILER_FEEDBACK_MAPPING = {
     ("pytorch", "unitrace"): UnitraceProfilerFeedback,
     ("triton", "ncu"): NCUProfilerFeedback,
     ("triton", "unitrace"): UnitraceProfilerFeedback,
+    ("cm", "vtune"): VTuneProfilerFeedback,
+    ("cm", "unitrace"): OCLUnitraceProfilerFeedback,
 }
 
 # Default profiler feedback for each language
 _DEFAULT_PROFILER_FEEDBACK = {
     "sycl": "unitrace",
     "ocl": "vtune",
+    "cm": "unitrace",
     "cuda": "ncu",
 }
 
 
 def get_profiler_feedback_class(
     language: str, gpu_arch: str, profiler_type: str | None = None
-) -> type[ProfilerFeedback]:
-    """Get the appropriate profiler feedback class based on user-specified profiler type or language & GPU architecture."""
-    language = language.lower()
+) -> type[ProfilerFeedback] | None:
+    """Get the appropriate profiler feedback class based on user-specified profiler type or language & GPU architecture.
 
-    if profiler_type is None:
+    Returns None if no profiler is configured or available for this language (profiling is skipped).
+    """
+    language = language.lower()
+    if profiler_type is not None:
+        profiler_type = profiler_type.lower()
+
+    # "default" resolves to the language's default profiler. None always means
+    # "no profiler configured" and must short-circuit to no profiling, regardless of language.
+    if profiler_type == "default":
         if language in ["pytorch", "triton"]:
             gpu_arch_is_cuda = gpu_arch in VALID_CUDA_ARCHS
             return NCUProfilerFeedback if gpu_arch_is_cuda else UnitraceProfilerFeedback
         profiler_type = _DEFAULT_PROFILER_FEEDBACK.get(language)
 
-    key = (language, profiler_type.lower() if profiler_type else None)
+    if profiler_type is None:
+        return None
+
+    key = (language, profiler_type.lower())
     if key in _PROFILER_FEEDBACK_MAPPING:
         return _PROFILER_FEEDBACK_MAPPING[key]
 

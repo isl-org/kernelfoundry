@@ -95,9 +95,16 @@ def combine_gpu_arch_results(exec_result_dict: dict[str, EvalResult], combined_e
     # If one is incorrect, return incorrect
     correctness = [res.correctness for res in exec_result_list]
     perf_score = [res.perf_score for res in exec_result_list]
+    # store all correctness stats by adding a new level with the gpu arch
+    all_correctness_stats = {gpu_key: res.correctness_stats for gpu_key, res in exec_result_dict.items()}
     if not all(correctness):
         return EvalResult(
-            compiled=True, correctness=False, perf_score=min(perf_score), eval_log=combined_eval_log, metadata=all_meta
+            compiled=True,
+            correctness=False,
+            correctness_stats=all_correctness_stats,
+            perf_score=min(perf_score),
+            eval_log=combined_eval_log,
+            metadata=all_meta,
         )
     # If all compiled and correct, return combined runtime and improvement
     assert all([res.runtime > 0 for res in exec_result_list]), "All runtimes should be > 0 if none is incorrect"
@@ -106,25 +113,22 @@ def combine_gpu_arch_results(exec_result_dict: dict[str, EvalResult], combined_e
     # store all runtime stats by adding a new level with the gpu arch
     all_runtime_stats = {gpu_key: res.runtime_stats for gpu_key, res in exec_result_dict.items()}
     # compute geometric mean for speedup - collect all speedups from runtime stats
-    speedups = [
-        all_runtime_stats[gpu][shape]["speedup"] for gpu in all_runtime_stats for shape in all_runtime_stats[gpu]
-    ]
+    speedups = [st["speedup"] for gpu in all_runtime_stats.values() for st in gpu.values() if st["speedup"] > 0]
     # other option: just take geom mean over runtime improvements which are already aggregated over benchmarks
     # speedups = [res.runtime_improvement for res in exec_result_list if res.runtime_improvement > 0]
     mean_speedup = gmean(speedups) if len(speedups) > 0 else -1
-    # profiler data
-    first_profiler_data = next(iter(exec_result_dict.values())).profiler_data
-    if len(exec_result_dict) > 1:
-        logging.warning("Storing profiler data only for the first GPU, visualizing for more GPUs is not supported yet.")
+    # store all profiler data by adding a new level with the gpu arch
+    all_profiler_data = {gpu_key: res.profiler_data for gpu_key, res in exec_result_dict.items() if res.profiler_data}
     return EvalResult(
         compiled=True,
         correctness=True,
+        correctness_stats=all_correctness_stats,
         runtime=mean_runtime,
         runtime_stats=all_runtime_stats,
         perf_score=5,
         eval_log=combined_eval_log,
         runtime_improvement=mean_speedup,
-        profiler_data=first_profiler_data,
+        profiler_data=all_profiler_data,
         metadata=all_meta,
     )
 
@@ -199,13 +203,24 @@ def get_timing_stats(elapsed_times: list[float], device=None, device_name: str =
         Dict containing mean, std, min, max and num_trials
         all timing are in ms
     """
+    if len(elapsed_times) == 0:
+        logging.warning("Elapsed times list is empty. Avoid pytest.skip and ensure profile_store is filled.")
+        mean, std, minimum, maximum, median = float("nan"), float("nan"), float("nan"), float("nan"), float("nan")
+    else:
+        mean, std, minimum, maximum, median = (
+            float(f"{np.mean(elapsed_times):.3g}"),
+            float(f"{np.std(elapsed_times):.3g}"),
+            float(f"{np.min(elapsed_times):.3g}"),
+            float(f"{np.max(elapsed_times):.3g}"),
+            float(f"{np.median(elapsed_times):.3g}"),
+        )
 
     stats = {
-        "mean": float(f"{np.mean(elapsed_times):.3g}"),
-        "std": float(f"{np.std(elapsed_times):.3g}"),
-        "min": float(f"{np.min(elapsed_times):.3g}"),
-        "max": float(f"{np.max(elapsed_times):.3g}"),
-        "median": float(f"{np.median(elapsed_times):.3g}"),
+        "mean": mean,
+        "std": std,
+        "min": minimum,
+        "max": maximum,
+        "median": median,
         "speedup": -1,  # can be filled later when reference time is available
         "ref_speed": -1,  # can be filled later when reference time is available
         "num_trials": len(elapsed_times),

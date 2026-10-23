@@ -93,6 +93,7 @@ class PromptConstructor:
         mode: str = "functional",
         use_feedback_llm: bool = False,
         mcp_prompt_list: list[str] | None = None,
+        skill_prompt_list: list[str] | None = None,
     ):
         """Initialize prompt construction dependencies and retrieval backends."""
 
@@ -116,6 +117,7 @@ class PromptConstructor:
             "use_hardware_prompt": prompt_config.get("include_hardware_specs", True),
             "allow_templated": prompt_config.get("allow_templated", False),
             "mcp_prompt_list": mcp_prompt_list or [],
+            "skill_prompt_list": skill_prompt_list or [],
             "prompt_template_fn": prompt_config.get("prompt_template_fn", None),
         }
 

@@ -115,7 +115,7 @@ class FeedbackHelper:
                 console_output = parent_program.kernel_exec_result.eval_log
             if self.use_feedback_llm and console_output is not None:
                 feedback_prompt = self.construct_feedback_prompt(prior_gen_code, console_output)
-                feedback = self.inference_server(messages=[{"role": "user", "content": feedback_prompt}])
+                feedback, _metadata = self.inference_server(messages=[{"role": "user", "content": feedback_prompt}])
                 return prior_gen_code, feedback
             # return generated kernel and console output if feedback LLM is not used
             return prior_gen_code, [console_output]
@@ -128,7 +128,7 @@ class FeedbackHelper:
                 prior_gen_code = extract_code_from_tags(prior_gen_code, self.language.lower())
             if self.use_feedback_llm and console_output is not None:
                 feedback_prompt = self.construct_feedback_prompt(prior_gen_code, console_output)
-                feedback = self.inference_server(messages=[{"role": "user", "content": feedback_prompt}])
+                feedback, _metadata = self.inference_server(messages=[{"role": "user", "content": feedback_prompt}])
             else:
                 feedback = [console_output]
             # return generated kernel, console output, and feedback
@@ -139,7 +139,7 @@ class FeedbackHelper:
         if not self.use_feedback_llm:
             return [console_output]
         feedback_prompt = self.construct_feedback_prompt(generated_kernel, console_output)
-        feedback = self.inference_server(messages=[{"role": "user", "content": feedback_prompt}])
+        feedback, _metadata = self.inference_server(messages=[{"role": "user", "content": feedback_prompt}])
         # replace keywords with relevant documentation
         if self.kw_prompt:
             feedback = [self.docs_handler.replace_keywords_by_documentation(fb) for fb in feedback]

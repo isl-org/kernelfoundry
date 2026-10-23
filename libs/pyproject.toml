@@ -1,0 +1,21 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.12"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "clops"
+version = "0.1.0"
+description = "OpenCL + CM (C for Metal) kernel launch helpers used by kernelfoundry"
+requires-python = ">=3.10"
+dependencies = ["numpy"]
+
+[tool.scikit-build]
+build-dir = "build/{wheel_tag}"
+
+[tool.scikit-build.cmake]
+build-type = "RelWithDebInfo"
+
+[tool.scikit-build.wheel]
+packages = ["clops"]
+# C++ sources/build files are only needed to build the extension, not at runtime.
+exclude = ["**/*.cpp", "**/*.hpp", "**/CMakeLists.txt"]

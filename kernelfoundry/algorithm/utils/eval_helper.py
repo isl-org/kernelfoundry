@@ -325,7 +325,9 @@ def _shorten_paths(lines: list[str]) -> list[str]:
 
 def _remove_duplicates(lines: list[str]) -> list[str]:
     """Remove duplicate lines if they are consecutive."""
-    new_lines = []
+    if not lines:
+        return []
+    new_lines = [lines[0]]
     for i in range(1, len(lines)):
         if lines[i] == lines[i - 1]:
             continue
@@ -376,7 +378,7 @@ def postprocess_compiler_output(result: ProcessResult, src_file_paths: Iterable[
     Returns:
         str: Postprocessed compiler output.
     """
-    output = result.stdout + "\n" + result.stderr
+    output = result.combine_output()
     lines = output.splitlines()
     lines = _skip_until_compiler(lines)
     lines = _skip_after_ninja_build_stopped(lines)

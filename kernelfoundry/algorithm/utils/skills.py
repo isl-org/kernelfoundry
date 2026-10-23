@@ -22,6 +22,7 @@ Design notes
 
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -343,6 +344,92 @@ class Skill:
         return dest
 
 
+# Extra ``languages`` metadata values that should match a given task language when filtering
+# skills. The task language maps to the set of accepted values.
+LANGUAGE_ALIASES: Dict[str, List[str]] = {
+    "opencl": ["opencl", "ocl"],
+}
+
+
+def load_skill_by_name(config: Any, name: str) -> Skill:
+    """Load one skill by directory name directly from ``config.skills.directories``.
+
+    Raises:
+        SkillError: if no skill named *name* is found under any configured directory.
+    """
+    directories = (config.get("skills", None) or {}).get("directories", None) or []
+    for directory in directories:
+        directory_path = Path(directory)
+        if not directory_path.is_absolute():
+            directory_path = Path.cwd() / directory_path
+        if (directory_path / name / SKILL_FILE).is_file():
+            return Skill.load(directory_path / name)
+    raise SkillError(f"Skill {name!r} not found under any of {list(directories)}.")
+
+
+def load_skills_for_language(config: Any) -> List[Skill]:
+    """Load the skills a run's config asks for, filtered to its task language.
+
+    Reads ``config.skills.directories`` and ``config.language``. A run always states its
+    language; a run that configures no skills directory gets an empty list back and is
+    otherwise unaffected. Relative directories resolve against the working directory.
+    """
+    skills_config = config.get("skills", None)
+    directories = skills_config.get("directories", None) if skills_config else None
+    language = config.get("language").lower()
+    if not directories or not language:
+        return []
+
+    languages_include = LANGUAGE_ALIASES.get(language, [language])
+    skills: List[Skill] = []
+    for directory in directories:
+        directory_path = Path(directory)
+        if not directory_path.is_absolute():
+            directory_path = Path.cwd() / directory_path
+        if not directory_path.is_dir():
+            logging.warning("Skills directory does not exist: %s", directory_path)
+            continue
+        skills.extend(SkillLibrary.load(directory_path).filter(languages_include=languages_include))
+
+    logging.info(
+        "Checked the KernelFoundry skills database for skills for language %r: %d skill(s) loaded",
+        language,
+        len(skills),
+    )
+    return skills
+
+
+def skills_as_prompt_sections(skills: Iterable[Skill], max_chars: int = 20000) -> List[str]:
+    """Render skills as prompt text for a workflow that cannot open files.
+
+    The agentic path hands an agent the skill directory and lets it read what it needs. A
+    classic search has no tools, so the only way it can use a skill is inline, and only
+    ``SKILL.md`` -- bundled resources stay on disk. Bodies are taken whole until ``max_chars`` is
+    reached, then the rest are dropped with a warning, because silently truncating a register
+    layout table is worse than not supplying it.
+    """
+    sections: List[str] = []
+    used = 0
+    for skill in skills:
+        if skill.resources:
+            logging.warning(
+                "Skill %r has %d bundled resource file(s) that are not inlined into classic prompts.",
+                skill.name,
+                len(skill.resources),
+            )
+        section = f"### {skill.name}\n\n{skill.description}\n\n{skill.body.strip()}"
+        if used + len(section) > max_chars:
+            logging.warning(
+                "Skill %r does not fit the %d character prompt budget and was left out.",
+                skill.name,
+                max_chars,
+            )
+            continue
+        sections.append(section)
+        used += len(section)
+    return sections
+
+
 def load_skills(directory: Union[str, Path], validate: bool = True) -> List[Skill]:
     """Load every skill found directly under ``directory``.
 
@@ -377,6 +464,15 @@ def _as_str_set(value: Any) -> set[str]:
     return {str(value)}
 
 
+def _as_language_set(value: Any) -> set[str]:
+    """Normalize a languages field to a set of lowercase tokens.
+
+    A config names its language as ``SYCL`` and a skill may declare ``sycl``; both describe the
+    same language, so case is not part of the match.
+    """
+    return {token.lower() for token in _as_str_set(value)}
+
+
 def filter_skills(
     skills: Iterable[Skill],
     languages_include: Optional[Iterable[str]] = None,
@@ -393,6 +489,8 @@ def filter_skills(
       for the key. An empty/``None`` include list imposes no constraint.
     * ``*_exclude``: drop the skill if it has any of these values for the key.
 
+    Languages are matched without regard to case; tags are matched verbatim.
+
     Args:
         skills: Skills to filter.
         languages_include: Keep skills whose ``metadata['languages']`` contains
@@ -407,13 +505,13 @@ def filter_skills(
     Returns:
         The list of skills that pass every constraint.
     """
-    lang_inc = _as_str_set(languages_include) if languages_include else None
-    lang_exc = _as_str_set(languages_exclude) if languages_exclude else None
+    lang_inc = _as_language_set(languages_include) if languages_include else None
+    lang_exc = _as_language_set(languages_exclude) if languages_exclude else None
     tag_inc = _as_str_set(tags_include) if tags_include else None
     tag_exc = _as_str_set(tags_exclude) if tags_exclude else None
 
     def keep(skill: Skill) -> bool:
-        languages = _as_str_set(skill.get_metadata("programming-languages"))
+        languages = _as_language_set(skill.get_metadata("programming-languages"))
         tags = _as_str_set(skill.get_metadata("tags"))
 
         if lang_inc is not None and languages.isdisjoint(lang_inc):

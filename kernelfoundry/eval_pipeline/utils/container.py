@@ -348,6 +348,8 @@ class ContainerRuntime(ABC):
             assert self.gpu_type is not None, "gpu_type must be set to use GPU options"
             if self.gpu_type == "intel":
                 device_args = ["--device", "/dev/dri:/dev/dri"]
+                if Path("/dev/accel").is_dir():
+                    device_args += ["--device", "/dev/accel:/dev/accel"]
                 if gpus != "all":
                     device_args += ["-e", f'''ONEAPI_DEVICE_SELECTOR="*:{','.join(str(i) for i in gpus)}"''']
 

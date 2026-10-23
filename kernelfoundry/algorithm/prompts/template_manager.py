@@ -15,7 +15,7 @@ from jinja2 import Environment, PackageLoader, select_autoescape
 from kernelfoundry.algorithm.schemas import Program
 from kernelfoundry.eval_pipeline.utils.gpu_specs import ARCH_TO_NAME, ARCH_TO_SPECS
 from kernelfoundry.algorithm.prompts.languages import KERNEL_OPTIMIZATION_TIPS
-from kernelfoundry.eval_pipeline.utils.custom_task_helper import blocks_to_str
+from kernelfoundry.eval_pipeline.utils.custom_task_helper import blocks_to_str, block_labels
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ class TemplateManager:
         use_hardware_prompt: bool = True,
         allow_templated: bool = False,
         mcp_prompt_list: Optional[List[str]] = None,
+        skill_prompt_list: Optional[List[str]] = None,
         template_example: Optional[str] = None,
         prompt_template_fn: str | None = None,
     ):
@@ -57,6 +58,7 @@ class TemplateManager:
             use_hardware_prompt: Whether to include hardware specs
             allow_templated: Whether to allow templated kernels
             mcp_prompt_list: Optional MCP-specific prompt guidance lines
+            skill_prompt_list: Optional skill bodies to inline, for a workflow with no tools
             template_example: Example of templated kernel format
             output_dir: Directory for saving evolution database (optional)
             llm_server: LLM server for mutation operations (optional)
@@ -72,6 +74,7 @@ class TemplateManager:
         self.use_hardware_prompt = use_hardware_prompt
         self.prompt_template_fn = prompt_template_fn or "main_prompt.j2"
         self.mcp_prompt_list = mcp_prompt_list or []
+        self.skill_prompt_list = skill_prompt_list or []
 
         # if allowing templated kernels or just standard optimization strategies
         self.allow_templated = allow_templated
@@ -134,6 +137,14 @@ class TemplateManager:
         if last_program and last_program.task:
             user_instructions = blocks_to_str(last_program.task.blocks.get("USER_INSTRUCTIONS", {}))
 
+        # If the task has more than one EVOLVE block, tell the LLM to label each one in its
+        # response so AnswerProcessor can map the answer back onto the right block.
+        evolve_block_labels = None
+        if last_program and last_program.code:
+            num_blocks = sum(len(contents) for contents in last_program.code.values())
+            if num_blocks > 1:
+                evolve_block_labels = block_labels(last_program.code)
+
         # Get evolvable content (from parameter or stored state)
         evolved = evolvable_content or getattr(self, "_evolvable_content", {}) or {}
 
@@ -172,6 +183,8 @@ class TemplateManager:
             algorithmic_strategies=algorithmic_strategies,
             # user instructions
             user_instructions=user_instructions,
+            # labels for multi-block tasks (None for single-block tasks)
+            evolve_block_labels=evolve_block_labels,
             # Evolved content from meta-prompting
             evolved_optimization_philosophy=evolved.get("optimization_philosophy"),
             evolved_optimization_strategies=evolved.get("optimization_strategies"),
@@ -179,6 +192,7 @@ class TemplateManager:
             evolved_analysis_guidance=evolved.get("analysis_guidance"),
             function_name=function_name,
             mcp_prompt_list=self.mcp_prompt_list,
+            skill_prompt_list=self.skill_prompt_list,
         )
         # remove empty lines
         filled_template = re.sub(r"\n\s*\n+", "\n\n", filled_template)

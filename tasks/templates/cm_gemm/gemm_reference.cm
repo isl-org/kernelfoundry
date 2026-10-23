@@ -1,0 +1,26 @@
+// [REFERENCE_START]
+//
+// Simple row-major GEMM: C[M,N] = A[M,K] x B[K,N]
+//
+// Each CM thread handles one output row (row = thread_id).
+// GWS = (M,)  LWS = (1,)
+//
+#include <cm/cm.h>
+
+extern "C" _GENX_MAIN_
+void gemm(float * A [[type("svmptr_t")]],
+          float * B [[type("svmptr_t")]],
+          float * C [[type("svmptr_t")]],
+          int M, int K, int N)
+{
+    const int row = cm_linear_global_id();
+    if (row >= M) return;
+
+    for (int col = 0; col < N; ++col) {
+        float acc = 0.0f;
+        for (int k = 0; k < K; ++k)
+            acc += A[row * K + k] * B[k * N + col];
+        C[row * N + col] = acc;
+    }
+}
+// [REFERENCE_END]

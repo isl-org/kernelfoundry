@@ -157,6 +157,11 @@ class CopilotCLIAgent(AgentBase):
         mcp_config = self._create_mcp_config(self._comm_dir)
         (self._copilot_home / "mcp-config.json").write_text(json.dumps(mcp_config, indent=2), encoding="utf-8")
 
+    @property
+    def task_data_dir(self) -> Path:
+        """Working directory the Copilot CLI subprocess runs in (task packagewith task.py, config.yaml etc)."""
+        return self._task_data_dir
+
     def __del__(self):
         try:
             pass
@@ -406,7 +411,7 @@ class CopilotCLIAgent(AgentBase):
                         prompt=self._current_prompt,
                         iteration=iteration,
                         branch=self._branch,
-                        llm_model="copilot-cli",
+                        llm_model=self._env_overrides.get("COPILOT_MODEL", "copilot-cli"),
                         session_log=session_log,
                         previous_program=self._parent_program,
                         agent_session_id=self._session_uuid,
@@ -634,7 +639,9 @@ class CopilotCLIAgent(AgentBase):
         """
         env = os.environ.copy()
         env["COPILOT_HOME"] = str(self._copilot_home)
-        env["COPILOT_OFFLINE"] = "true"
+        # Offline mode routes the CLI at COPILOT_PROVIDER_BASE_URL.
+        if env.get("COPILOT_PROVIDER_BASE_URL"):
+            env["COPILOT_OFFLINE"] = "true"
         # env["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://localhost:4318"
         env["COPILOT_OTEL_FILE_EXPORTER_PATH"] = str(self._tmpdir_path / "copilot-otel.jsonl")
         env["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] = "true"

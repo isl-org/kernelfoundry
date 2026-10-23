@@ -4,7 +4,6 @@
 defaults:
   - base
   - controller: copilot
-  - skills: default
   - override prompt: agentic
   - _self_
 

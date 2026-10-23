@@ -43,6 +43,8 @@ import os
 import random
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
+import hydra
+
 # Lazy import for meta-prompting to avoid circular dependencies
 _meta_prompting_module = None
 
@@ -88,9 +90,8 @@ class PromptEvolutionMixin:
                 self.setup_prompt_evolution()
     """
 
-    # These attributes should be set by the inheriting class
+    # This attribute should be set by the inheriting class
     config: "DictConfig"
-    llm_server: Callable
 
     def setup_prompt_evolution(self):
         """
@@ -161,10 +162,13 @@ class PromptEvolutionMixin:
                 elif isinstance(meta_prompting_config, dict):
                     meta_config_dict = {str(k): v for k, v in meta_prompting_config.items()}
 
+            meta_prompting_llm_server = hydra.utils.instantiate(meta_prompting_config.inference)
+
             self._init_meta_prompting_manager(
                 config=meta_config_dict,
                 output_dir=output_dir,
                 language=language,
+                llm_server=meta_prompting_llm_server,
             )
             logger.info(f"Meta-prompting (holistic) initialized: mode={self._prompt_evolution_mode}")
 
@@ -175,6 +179,7 @@ class PromptEvolutionMixin:
         config: Dict[str, Any],
         output_dir: str,
         language: str,
+        llm_server: Callable,
     ):
         """Initialize the meta-prompting manager."""
         mp = _get_meta_prompting_module()
@@ -182,7 +187,7 @@ class PromptEvolutionMixin:
         self._meta_prompting_manager = mp.create_meta_prompting_manager(
             config=config,
             output_dir=output_dir,
-            llm_server=self.llm_server,
+            llm_server=llm_server,
             language=language,
         )
 

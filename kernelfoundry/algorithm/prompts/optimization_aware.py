@@ -42,6 +42,7 @@ class Backend(Enum):
     SYCL = auto()  # Intel oneAPI DPC++ (includes ESIMD)
     CUDA = auto()  # NVIDIA CUDA
     OPENCL = auto()  # Khronos OpenCL
+    VULKAN = auto()  # Khronos Vulkan compute (GLSL/SPIR-V)
     TRITON = auto()  # OpenAI Triton (future)
 
     @classmethod
@@ -72,11 +73,17 @@ class Backend(Enum):
             "OPENCL": cls.OPENCL,
             "OCL": cls.OPENCL,
             "KHRONOS": cls.OPENCL,
+            # C for Metal uses the same low-level GPU optimization guidance
+            # as OpenCL in the optimization-aware prompt system.
+            "CM": cls.OPENCL,
+            "C FOR METAL": cls.OPENCL,
+            "VULKAN": cls.VULKAN,
+            "SPIR-V": cls.VULKAN,
             "TRITON": cls.TRITON,
         }
         if s_upper in mapping:
             return mapping[s_upper]
-        raise ValueError(f"Unknown backend: {s}. Supported: SYCL, CUDA, OCL, TRITON")
+        raise ValueError(f"Unknown backend: {s}. Supported: SYCL, CUDA, OCL, CM, VULKAN, TRITON")
 
     @property
     def supports_explicit_simd(self) -> bool:
@@ -95,6 +102,7 @@ class Backend(Enum):
             Backend.SYCL: "SYCL",
             Backend.CUDA: "CUDA",
             Backend.OPENCL: "OCL",
+            Backend.VULKAN: "Vulkan",
             Backend.TRITON: "Triton",
         }
         return names.get(self, self.name)
@@ -227,6 +235,12 @@ def _get_triton_memory_optimization_instructions(level: int) -> str:
     return _prompt_text("memory", "triton", key, default=_prompt_text("memory", "triton", "3"))
 
 
+def _get_vulkan_memory_optimization_instructions(level: int) -> str:
+    """Get Vulkan/GLSL-specific instructions for memory optimization at given level."""
+    key = str(level)
+    return _prompt_text("memory", "vulkan", key, default=_prompt_text("memory", "vulkan", "3"))
+
+
 def _get_compute_optimization_instructions(level: int) -> str:
     """Get specific instructions for compute/algorithmic optimization."""
     key = str(level)
@@ -249,6 +263,12 @@ def _get_triton_compute_optimization_instructions(level: int) -> str:
     """Get Triton-specific instructions for compute/algorithmic optimization."""
     key = str(level)
     return _prompt_text("compute", "triton", key, default=_prompt_text("compute", "triton", "3"))
+
+
+def _get_vulkan_compute_optimization_instructions(level: int) -> str:
+    """Get Vulkan/GLSL-specific instructions for compute/algorithmic optimization."""
+    key = str(level)
+    return _prompt_text("compute", "vulkan", key, default=_prompt_text("compute", "vulkan", "3"))
 
 
 def _get_parallelism_optimization_instructions(level: int) -> str:
@@ -275,6 +295,12 @@ def _get_triton_parallelism_optimization_instructions(level: int) -> str:
     return _prompt_text("parallelism", "triton", key, default=_prompt_text("parallelism", "triton", "3"))
 
 
+def _get_vulkan_parallelism_optimization_instructions(level: int) -> str:
+    """Get Vulkan/GLSL-specific instructions for parallelism optimization."""
+    key = str(level)
+    return _prompt_text("parallelism", "vulkan", key, default=_prompt_text("parallelism", "vulkan", "3"))
+
+
 def _get_esimd_instructions() -> str:
     """Get ESIMD-specific instructions."""
     return _prompt_text("explicit_simd", "sycl_esimd")
@@ -288,6 +314,11 @@ def _get_tensor_core_instructions() -> str:
 def _get_opencl_explicit_simd_instructions() -> str:
     """Get OpenCL SIMD/sub-group instructions."""
     return _prompt_text("explicit_simd", "opencl")
+
+
+def _get_vulkan_explicit_simd_instructions() -> str:
+    """Get Vulkan/GLSL subgroup & vector-type instructions."""
+    return _prompt_text("explicit_simd", "vulkan")
 
 
 def get_memory_optimization_instructions(level: int, backend: Optional[Union[Backend, str]] = None) -> str:
@@ -310,6 +341,8 @@ def get_memory_optimization_instructions(level: int, backend: Optional[Union[Bac
         return _get_cuda_memory_optimization_instructions(level)
     if backend == Backend.OPENCL:
         return _get_opencl_memory_optimization_instructions(level)
+    if backend == Backend.VULKAN:
+        return _get_vulkan_memory_optimization_instructions(level)
     if backend == Backend.TRITON:
         return _get_triton_memory_optimization_instructions(level)
     if backend == Backend.SYCL:
@@ -337,6 +370,8 @@ def get_compute_optimization_instructions(level: int, backend: Optional[Union[Ba
         return _get_cuda_compute_optimization_instructions(level)
     if backend == Backend.OPENCL:
         return _get_opencl_compute_optimization_instructions(level)
+    if backend == Backend.VULKAN:
+        return _get_vulkan_compute_optimization_instructions(level)
     if backend == Backend.TRITON:
         return _get_triton_compute_optimization_instructions(level)
     if backend == Backend.SYCL:
@@ -364,6 +399,8 @@ def get_parallelism_optimization_instructions(level: int, backend: Optional[Unio
         return _get_cuda_parallelism_optimization_instructions(level)
     if backend == Backend.OPENCL:
         return _get_opencl_parallelism_optimization_instructions(level)
+    if backend == Backend.VULKAN:
+        return _get_vulkan_parallelism_optimization_instructions(level)
     if backend == Backend.TRITON:
         return _get_triton_parallelism_optimization_instructions(level)
     if backend == Backend.SYCL:
@@ -392,6 +429,8 @@ def get_explicit_simd_instructions(backend: Optional[Union[Backend, str]] = None
         return _get_tensor_core_instructions()
     if backend == Backend.OPENCL:
         return _get_opencl_explicit_simd_instructions()
+    if backend == Backend.VULKAN:
+        return _get_vulkan_explicit_simd_instructions()
     if backend == Backend.TRITON:
         return ""  # Triton has no explicit SIMD; use tl.dot for tensor core dispatch
     if backend == Backend.SYCL:
@@ -475,6 +514,8 @@ def _get_antipatterns_section(backend: Optional[Union[Backend, str]] = None) -> 
         return _get_cuda_antipatterns_section()
     if backend == Backend.OPENCL:
         return _get_opencl_antipatterns_section()
+    if backend == Backend.VULKAN:
+        return _get_vulkan_antipatterns_section()
     if backend == Backend.TRITON:
         return _get_triton_antipatterns_section()
     if backend == Backend.SYCL:
@@ -502,6 +543,11 @@ def _get_triton_antipatterns_section() -> str:
     return _prompt_text("antipatterns", "triton")
 
 
+def _get_vulkan_antipatterns_section() -> str:
+    """Get Vulkan/GLSL-specific antipatterns."""
+    return _prompt_text("antipatterns", "vulkan")
+
+
 def _get_performance_hints_section(backend: Optional[Union[Backend, str]] = None) -> str:
     """
     Get performance optimization hints and best practices.
@@ -521,6 +567,8 @@ def _get_performance_hints_section(backend: Optional[Union[Backend, str]] = None
         return _get_cuda_performance_hints_section()
     if backend == Backend.OPENCL:
         return _get_opencl_performance_hints_section()
+    if backend == Backend.VULKAN:
+        return _get_vulkan_performance_hints_section()
     if backend == Backend.TRITON:
         return _get_triton_performance_hints_section()
     if backend == Backend.SYCL:
@@ -546,6 +594,11 @@ def _get_opencl_performance_hints_section() -> str:
 def _get_triton_performance_hints_section() -> str:
     """Get Triton-specific performance hints."""
     return _prompt_text("performance_hints", "triton")
+
+
+def _get_vulkan_performance_hints_section() -> str:
+    """Get Vulkan/GLSL-specific performance hints."""
+    return _prompt_text("performance_hints", "vulkan")
 
 
 def build_exploration_prompt(
@@ -1040,6 +1093,8 @@ def _get_dimension_guidance(
         return _get_cuda_dimension_guidance(dimension, level)
     if backend == Backend.OPENCL:
         return _get_ocl_dimension_guidance(dimension, level)
+    if backend == Backend.VULKAN:
+        return _get_vulkan_dimension_guidance(dimension, level)
     if backend == Backend.SYCL:
         return _get_sycl_dimension_guidance(dimension, level)
     raise ValueError(f"Unsupported backend '{backend}' for dimension guidance")
@@ -1061,6 +1116,11 @@ def _get_sycl_dimension_guidance(dimension: str, level: int) -> Tuple[List[str],
 def _get_ocl_dimension_guidance(dimension: str, level: int) -> Tuple[List[str], List[str]]:
     """Get OpenCL-specific techniques and code examples for a dimension and level."""
     return _load_dimension_guidance_json("opencl", dimension, level)
+
+
+def _get_vulkan_dimension_guidance(dimension: str, level: int) -> Tuple[List[str], List[str]]:
+    """Get Vulkan/GLSL-specific techniques and code examples for a dimension and level."""
+    return _load_dimension_guidance_json("vulkan", dimension, level)
 
 
 def _get_cuda_dimension_guidance(dimension: str, level: int) -> Tuple[List[str], List[str]]:
@@ -1092,6 +1152,8 @@ def _get_explicit_simd_upgrade_section(backend: Optional[Union[Backend, str]] = 
         return _get_tensor_core_upgrade_section()
     if backend == Backend.OPENCL:
         return _get_opencl_upgrade_section()
+    if backend == Backend.VULKAN:
+        return _get_vulkan_upgrade_section()
     if backend == Backend.SYCL:
         return _get_esimd_upgrade_section()
     raise ValueError(f"Unsupported backend '{backend}' for explicit SIMD upgrade section")
@@ -1110,6 +1172,11 @@ def _get_esimd_upgrade_section() -> str:
 def _get_opencl_upgrade_section() -> str:
     """Get complete OpenCL upgrade guidance section."""
     return _prompt_text("upgrades", "opencl")
+
+
+def _get_vulkan_upgrade_section() -> str:
+    """Get complete Vulkan/GLSL upgrade guidance section."""
+    return _prompt_text("upgrades", "vulkan")
 
 
 def _format_guidance_section(

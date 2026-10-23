@@ -5,6 +5,7 @@ defaults:
   - inference: server
   - database: evolve_db_optimization_aware
   - prompt: default
+  - skills: default
   - task_set: default
   - experiment: null
   - override hydra/hydra_logging: disabled
@@ -45,6 +46,8 @@ improve_only_correct: False # only relevant if kernels_iter_0_path is not null
 branches_per_iteration: 2
 max_iters: 3
 stop_once_correct: False
+target_roofline_pct: null  # e.g. 80 -> stop early once a correct kernel's worst-case roofline % (of peak compute or memory bandwidth, whichever bound applies) reaches this across all benchmarks/GPUs
+ai_compute_roofline: false  # agentic_workflow only: before iterating, spins up an agent that computes the ideal roofline target
 
 # Code postprocessing options
 postprocess_code: true
@@ -54,9 +57,11 @@ postprocess_code_config:
 ###### Feedback LLM ######
 use_feedback_llm: False
 feedback_llm_config:
-  _target_: kernelfoundry.algorithm.inference_server.InferenceServer
-  server_type: "openai"
-  model_name: "gpt-4.1"
+  provider: openai
+  model: "gpt-4.1"
+  _target_: ${inference_target:${feedback_llm_config.provider}}
+  server_type: ${feedback_llm_config.provider}
+  model_name: ${feedback_llm_config.model}
   max_tokens: 2000
   timeout: 360  # 5 minutes
   temperature: 0.0
@@ -70,6 +75,7 @@ validate: False
 use_queue: false # whether to use message queue for custom tasks
 test_reference: true
 reference_gpu_arch: ${gpu_arch}
+use_cached_reference: true # reuse cached reference result if exists and task/reference correspond 
 
 # custom task build settings
 has_build_step: true
@@ -102,18 +108,22 @@ eval_config:
   inner_loop_min_time: 0.01 # kernel pass must take at least 0.01 s to avoid overhead of synchronize function
   unitrace_cmd: unitrace # command or path to unitrace
   use_queue: ${use_queue} # whether to use message queue TODO: move this out of eval_config
+  # DEPRECATED: use profiler_kernel: null instead of setting this to false.
   profile_custom_model: true
+  # DEPRECATED: use profiler_reference: default (or an explicit profiler name) instead of setting this to true.
   profile_original_model: false
   profile_num_iterations: 5
   kernel_compiler:
     _target_: kernelfoundry.compiler.TorchCompiler
 
-# Profiler selection: null/default uses language defaults (sycl→unitrace, ocl→vtune, cuda→ncu)
+# Profiler selection: "default" uses language defaults (sycl→unitrace, ocl→vtune, cuda→ncu).
+# null explicitly disables profiling for that side (kernel or reference)
 # Examples:
 #   profiler_kernel=unitrace profiler_reference=vtune  (different profilers)
 #   profiler_kernel=vtune profiler_reference=vtune  (same profiler for both)
-profiler_kernel: null
-profiler_reference: null
+#   profiler_kernel=default profiler_reference=default  (profile both sides with language defaults)
+profiler_kernel: default # profile the generated kernel by default (language default profiler)
+profiler_reference: null # don't profile the reference by default
 
 ###### Optimization aware evolve config (note: only used if branches_per_iteration>1) ######
 

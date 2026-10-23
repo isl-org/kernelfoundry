@@ -4,6 +4,7 @@ from nicegui import ui
 import os, json
 from pathlib import Path
 import re
+import subprocess
 import pandas as pd
 import io
 import warnings
@@ -18,7 +19,7 @@ from kernelfoundry.eval_pipeline.utils.performance_analysis import (
     get_median_row,
     get_row_with_closest_metric,
 )
-from kernelfoundry.gui.utils import get_kernel_by_id, get_profiler_data_reference_by_job_id
+from kernelfoundry.gui.utils import get_kernel_by_id, get_profiler_data_reference_by_job_id, normalize_profiler_data
 from kernelfoundry.eval_pipeline.profiler_feedback import UnitraceProfilerFeedback, VTuneProfilerFeedback
 
 
@@ -168,6 +169,7 @@ class RooflineUtils:
     def shorten_fn_name(fn_name: str) -> str:
         """Shorten function names by removing common namespace prefixes."""
         repl = [
+            ("at::native::xpu::", ""),
             ("at::native::templates::", ""),
             ("at::native::", ""),
             ("at::detail::", ""),
@@ -177,6 +179,33 @@ class RooflineUtils:
         for old, new in repl:
             fn_name = fn_name.replace(old, new)
         return fn_name
+
+    @staticmethod
+    def canonicalize_kernel_name(name: str) -> str:
+        """Normalize a GPU kernel name so VTune and Unitrace group/display it identically.
+
+        VTune reports the raw (often mangled, e.g. "_ZTS...") symbol name and JIT-compiles
+        SIMD autotune variants under that same name (already merged upstream, see
+        ``VTune._parse_tsv_reports``). Unitrace instead reports the demangled name directly
+        from the driver, with a "[SIMDxx]" suffix per JIT-compiled SIMD-width variant of the
+        *same* kernel.
+        Stripping the suffix and demangling mangled names merges those variants and makes
+        both profilers key on the same human-readable string.
+        """
+        name = re.sub(r"\s*\[SIMD\d+[^\]]*\]\s*$", "", name)
+        match = re.search(r"operator\(\)\([^()]*\)(?:\s*const)?::(.+)$", name)
+        if match and match.group(1):
+            name = match.group(1)
+        if name.startswith("_Z"):
+            try:
+                demangled = subprocess.run(["c++filt", name], capture_output=True, text=True, timeout=5).stdout.strip()
+                if demangled:
+                    name = demangled
+            except Exception:
+                pass
+        if name.startswith("typeinfo name for "):
+            name = name[len("typeinfo name for ") :]
+        return name
 
     @staticmethod
     def read_metrics(profiler_data: dict) -> tuple[pd.DataFrame | None, pd.DataFrame | None, pd.DataFrame | None]:
@@ -278,9 +307,13 @@ class RooflineUtils:
 
     @staticmethod
     def get_median_row_for_each_kernel(df: pd.DataFrame, column: str = "GpuTime[ns]") -> list[pd.Series]:
-        """Returns a DataFrame with the median row for each kernel."""
+        """Returns a DataFrame with the median row for each kernel.
+
+        Groups by the canonicalized kernel name so JIT-compiled SIMD-width variants of the
+        same kernel (see ``canonicalize_kernel_name``) are merged into a single entry.
+        """
         result_rows = []
-        for kernel_name, group in df.groupby("Kernel"):
+        for _, group in df.groupby(df["Kernel"].map(RooflineUtils.canonicalize_kernel_name)):
             median_row = get_median_row(group, column=column)
             result_rows.append(median_row)
         return result_rows
@@ -325,8 +358,10 @@ class RooflineUtils:
         roofs: HardwareRoofs,
     ):
         """Generates the chart options for the roofline plot.
+
         Args:
-            title (str): The title of the chart.
+            title (str): The (canonicalized/shortened) name of the kernel. Kept for callers/log
+                messages; not used for the chart itself.
             data (pd.Series): The data series containing the metrics.
             mem_compute_pairs (list[tuple[tuple[str,str], str]]): List of memory-compute metric column name pairs.
             roofs (HardwareRoofs): Dictionary of roof names to their compute limits.
@@ -409,7 +444,6 @@ class RooflineUtils:
 
         # print(title, len(series))
         options = {
-            "title": {"text": f"Kernel: {title}", "textStyle": {"fontSize": 16}},
             "xAxis": {
                 "name": "instructions/byte",
                 "type": "log",
@@ -424,6 +458,7 @@ class RooflineUtils:
             },
             "tooltip": {},
             "legend": {},
+            "grid": {"top": 40},
             "series": series,
         }
         errors = []
@@ -722,7 +757,7 @@ class RooflineUtils:
         profiler_key: str,
         shorten_fn_signatures: bool = True,
         figure_templates: dict | None = None,
-    ) -> OrderedDict[str, dict]:
+    ) -> tuple[OrderedDict[str, dict], str | None]:
         """Generates chart options for all roofline plots for a given kernel entry
         Args:
             profiler_data (dict): The profiler data dictionary.
@@ -730,13 +765,23 @@ class RooflineUtils:
             profiler_key (str): The key in the profiler data to use (e.g. 'unitrace', 'vtune').
             shorten_fn_signatures (bool): Whether to shorten function signatures in titles.
         Returns:
-            OrderedDict[str, dict]: An ordered dictionary mapping kernel names to their chart data.
-                Each value contains: 'roofline_options', 'mem_figure', 'alu_bar_chart_options'
+            tuple[OrderedDict[str, dict], str | None]: An ordered dictionary mapping kernel names
+                to their chart data (each value contains 'roofline_options', 'mem_figure',
+                'alu_bar_chart_options').
         """
         result = OrderedDict()
         roofs_info = get_roofs(worker_info)
         if roofs_info is None:
-            return result
+            if not worker_info:
+                # No worker info at all means this side was never profiled (e.g. test_reference:
+                # false) — not a missing hardware-spec registration, so stay silent.
+                return result, None
+            cpu_name = worker_info.get("cpu_info")
+            gpu_name = worker_info.get("gpu_name")
+            return result, (
+                f"No roofline hardware specs registered for cpu={cpu_name!r} / gpu={gpu_name!r} — "
+                "add an entry to hardware_info.py to enable the roofline chart for this worker."
+            )
         raw_data = profiler_data.get(profiler_key, {})
         # Detect vtune
         is_vtune = "counters" in raw_data
@@ -753,7 +798,7 @@ class RooflineUtils:
             vtune_counters = {}
             df_vtune_raw = None
         if df_compute_basic is None:
-            return result
+            return result, None
         df = df_compute_basic
         metrics_per_kernel = RooflineUtils.get_median_row_for_each_kernel(df_compute_basic)
 
@@ -770,7 +815,7 @@ class RooflineUtils:
             _get_closest_per_kernel(df_vector_engine_profile) if df_vector_engine_profile is not None else None
         )
         for metrics in metrics_per_kernel:
-            name = f"{metrics['Kernel']}"
+            name = RooflineUtils.canonicalize_kernel_name(f"{metrics['Kernel']}")
             if shorten_fn_signatures:
                 name = RooflineUtils.shorten_fn_name(name)
             mem_compute_pairs = []
@@ -794,6 +839,11 @@ class RooflineUtils:
                 mem_compute_pairs=mem_compute_pairs,
                 roofs=roofs_info,
             )
+            # Cap the canonicalized kernel title to avoid overly long titles in the chart.
+            MAX_TITLE_CHARS = 30
+            kernel_title = name if len(name) <= MAX_TITLE_CHARS else name[:MAX_TITLE_CHARS].rstrip() + " …"
+            original_name = f"{metrics['Kernel']}"
+            kernel_subtitle = original_name if original_name != name else None
             figure = None
             alu_bar_chart_options = None
             freqs_runtime_info = OrderedDict()
@@ -912,8 +962,12 @@ class RooflineUtils:
                     "CoreFrequencyChanged": metrics.get("CoreFrequencyChanged", "N/A"),
                 }
 
-                if mem_metrics_per_kernel is not None:
-                    mem_metrics = next((m for m in mem_metrics_per_kernel if m["Kernel"] == metrics["Kernel"]), None)
+                mem_metrics = (
+                    next((m for m in mem_metrics_per_kernel if m["Kernel"] == metrics["Kernel"]), None)
+                    if mem_metrics_per_kernel is not None
+                    else None
+                )
+                if mem_metrics is not None:
                     figure = (
                         fill_figure_template(figure_templates["intel_mem"], [mem_metrics]) if figure_templates else None
                     )
@@ -923,8 +977,12 @@ class RooflineUtils:
                         "CoreFrequency[MHz]": mem_metrics.get("CoreFrequencyMHz[MHz]", "N/A"),
                         "CoreFrequencyChanged": mem_metrics.get("CoreFrequencyChanged", "N/A"),
                     }
-                if figure and ve_metrics_per_kernel is not None:
-                    ve_metrics = next((m for m in ve_metrics_per_kernel if m["Kernel"] == metrics["Kernel"]), None)
+                ve_metrics = (
+                    next((m for m in ve_metrics_per_kernel if m["Kernel"] == metrics["Kernel"]), None)
+                    if ve_metrics_per_kernel is not None
+                    else None
+                )
+                if figure and ve_metrics is not None:
                     freqs_runtime_info["VectorEngineProfile"] = {
                         "GpuTime[ns]": ve_metrics.get("GpuTime[ns]", "N/A"),
                         "AvgGpuCoreFrequency[MHz]": ve_metrics.get("AvgGpuCoreFrequencyMHz[MHz]", "N/A"),
@@ -950,11 +1008,12 @@ class RooflineUtils:
                         / roofs_info["XVE_INST_EXECUTED_ALU2_ALL[events]"]
                     )
                     figure = _fill_figure_template_alu_bars(figure, bars)
-                if ve_metrics_per_kernel is not None:
-                    ve_metrics = next((m for m in ve_metrics_per_kernel if m["Kernel"] == metrics["Kernel"]), None)
+                if ve_metrics is not None:
                     alu_bar_chart_options = RooflineUtils.get_alu_breakdown_chart_options(ve_metrics, roofs_info)
 
             result[name] = {
+                "kernel_title": kernel_title,
+                "kernel_subtitle": kernel_subtitle,
                 "roofline_options": options,
                 "mem_figure": figure,
                 "alu_bar_chart_options": alu_bar_chart_options,
@@ -965,32 +1024,23 @@ class RooflineUtils:
                 "freqs_runtime_info": freqs_runtime_info,
             }
 
-        return result
+        return result, None
 
 
-def render_kernel_charts_section(
-    label: str,
-    profiler_data: dict,
-    worker_info: dict,
-    profiler_key: str,
-    profiler_feedback: str | None = None,
-    figure_templates: dict | None = None,
-):
-    """Renders the profiler charts section for a kernel (custom or reference).
-
-    Args:
-        label: Section header label (e.g. "custom" or "reference").
-        profiler_data: The profiler data dictionary for the kernel.
-        worker_info: The worker info dictionary for the kernel.
-        profiler_key: The key in profiler_data to use (e.g. "unitrace").
-        profiler_feedback: Optional profiler feedback text to display after the charts.
-    """
-    ui.label(label).classes("text-center w-full text-xl")
-    for title, chart_data in RooflineUtils.get_chart_options_for_kernel(
-        profiler_data, worker_info, profiler_key, figure_templates=figure_templates
-    ).items():
+def _render_charts(charts: dict, warning: str | None):
+    if warning:
+        ui.label(warning).classes("text-center w-full text-orange-600 italic")
+    for title, chart_data in charts.items():
         with ui.row().classes("w-full"):
-            ui.echart(options=chart_data["roofline_options"]).classes("w-full h-96")
+            with ui.column().classes("w-full gap-0 items-center text-center mt-4"):
+                ui.label(f"Kernel: {chart_data['kernel_title']}").classes(
+                    "font-bold text-lg break-words whitespace-normal"
+                )
+                if chart_data.get("kernel_subtitle"):
+                    ui.label(chart_data["kernel_subtitle"]).classes(
+                        "text-xs text-gray-500 break-words whitespace-normal"
+                    )
+                ui.echart(options=chart_data["roofline_options"]).classes("w-full h-96")
             if chart_data.get("mem_figure") is not None:
                 ui.html(chart_data["mem_figure"], sanitize=False).classes("w-1/3 h-96 mt-6")
             if chart_data.get("alu_bar_chart_options"):
@@ -1033,18 +1083,70 @@ def render_kernel_charts_section(
                         ui.table.from_pandas(
                             df, title="VectorEngineProfile", pagination=10, column_defaults=column_defaults
                         ).classes("w-full")
+
+
+def render_kernel_charts_section(
+    label: str,
+    profiler_data: dict,
+    worker_info: dict,
+    profiler_key: str,
+    profiler_feedback: str | None = None,
+    figure_templates: dict | None = None,
+):
+    """Renders the profiler charts section for a kernel (custom or reference).
+
+    When the profiler data has been segmented per pytest benchmark (e.g. VTune's
+    ``vtune_segments.json`` or Unitrace's per-model-run segments), renders one set of
+    charts per benchmark instead of a single chart computed from data aggregated across
+    all benchmarks.
+
+    Args:
+        label: Section header label (e.g. "custom" or "reference").
+        profiler_data: The profiler data dictionary for the kernel.
+        worker_info: The worker info dictionary for the kernel.
+        profiler_key: The key in profiler_data to use (e.g. "unitrace").
+        profiler_feedback: Optional profiler feedback text to display after the charts.
+    """
+    ui.label(label).classes("text-center w-full text-2xl font-bold")
+    raw_data = profiler_data.get(profiler_key, {})
+    segments = raw_data.get("segments")
+    if segments:
+        is_vtune = "counters" in raw_data
+        for segment_label, segment_data in segments.items():
+            benchmark_title = segment_label.rsplit("::", 1)[-1]
+            if len(benchmark_title) > 30:
+                benchmark_title = benchmark_title[:30].rstrip() + " …"
+            with ui.column().classes("w-full gap-0 items-center text-center mt-4"):
+                ui.label(f"Benchmark: {benchmark_title}").classes("font-bold text-lg break-words whitespace-normal")
+                ui.label(segment_label).classes("text-xs text-gray-500 break-words whitespace-normal")
+            scoped_profiler_data = {profiler_key: {"counters": segment_data} if is_vtune else segment_data}
+            charts, warning = RooflineUtils.get_chart_options_for_kernel(
+                scoped_profiler_data, worker_info, profiler_key, figure_templates=figure_templates
+            )
+            _render_charts(charts, warning)
+    else:
+        charts, warning = RooflineUtils.get_chart_options_for_kernel(
+            profiler_data, worker_info, profiler_key, figure_templates=figure_templates
+        )
+        _render_charts(charts, warning)
     if profiler_feedback:
         with ui.expansion("Profiler Feedback").classes("w-full mt-4"):
             ui.code(profiler_feedback, language="markdown").classes("w-full whitespace-pre-wrap text-sm")
 
 
-def write_trace_and_create_traceviewer_button(kernel, kernel_id):
+def write_trace_and_create_traceviewer_button(kernel, kernel_id, arch=None):
     """Write profiler trace to file and create a viewer button for timeline analysis."""
-    trace_file_name = f"profiler_data_{kernel_id}.json"
+    # Include the arch in the filename/URL to allow gpu arch to differ by tabs/sessions
+    trace_file_name = f"profiler_data_{kernel_id}_{arch if arch is not None else 'unknown'}.json"
     profiler_data_dir = ui.traceviewer.profiler_data_dir
     temp_trace_path = os.path.join(profiler_data_dir, trace_file_name)
 
-    def get_timeline_data_from_kernel(kernel):
+    def get_timeline_data_from_kernel(kernel, arch):
+        if arch is not None:
+            try:
+                return {"traceEvents": kernel.profiler_data_detail[arch]["unitrace"]["timeline"]["traceEvents"]}
+            except:
+                pass
         try:
             return {"traceEvents": kernel.profiler_data_detail["unitrace"]["timeline"]["traceEvents"]}
         except:
@@ -1059,7 +1161,7 @@ def write_trace_and_create_traceviewer_button(kernel, kernel_id):
             pass
         return {}
 
-    data = get_timeline_data_from_kernel(kernel)
+    data = get_timeline_data_from_kernel(kernel, arch)
 
     if data:
         with open(temp_trace_path, "w") as f:
@@ -1072,6 +1174,18 @@ def write_trace_and_create_traceviewer_button(kernel, kernel_id):
     if not data:
         trace_button.disable()
     return trace_button
+
+
+def _flatten_worker_info(info: dict | None) -> dict | None:
+    """`Kernel.eval_worker_info` is keyed by evaluation arch (one entry per architecture a kernel
+    was evaluated against), e.g. {"xpu": {"cpu_info": ..., "gpu_name": ...}}. Unwrap to a single
+    flat worker-info dict regardless of how many archs are present — the physical hardware is the
+    same machine across archs within one job, so any one entry is representative.
+    """
+    if info is None or "gpu_name" in info:
+        return info
+    inner_dicts = [v for v in info.values() if isinstance(v, dict)]
+    return inner_dicts[0] if inner_dicts else info
 
 
 def roofline_page(kernel_id: int = 0, template_dir: Path | None = None):
@@ -1089,20 +1203,42 @@ div.nicegui-code * > pre {
     FIGURE_TEMPLATES = _load_svg_templates(template_dir)
 
     kernel = get_kernel_by_id(kernel_id)
+    if kernel is None:
+        ui.label("Kernel not found").classes("text-red-500")
+        return
+
+    # profiler_data is keyed by gpu arch (new format) or is a legacy flat {profiler_name: data}
+    # dict (old format, single-arch-only) — normalize_profiler_data makes both look the same.
+    profiler_data_by_arch = normalize_profiler_data(kernel.profiler_data, kernel.gpu_arch)
+
     if kernel.profiler_data_reference is None:
         # Check kernels from the same job for the profiler data reference
-        profiler_data_reference, eval_worker_info_reference = get_profiler_data_reference_by_job_id(kernel.job_id)
-        if eval_worker_info_reference is not None and "gpu_name" in eval_worker_info_reference:
-            eval_worker_info_reference = eval_worker_info_reference
-        elif eval_worker_info_reference is not None and len(eval_worker_info_reference) == 1:
-            eval_worker_info_reference = next(iter(eval_worker_info_reference.values()))
+        profiler_data_reference_raw, eval_worker_info_reference_raw = get_profiler_data_reference_by_job_id(
+            kernel.job_id
+        )
     else:
         # Reference profiler data was captured together with this kernel
-        profiler_data_reference = kernel.profiler_data_reference
-        if kernel.eval_worker_info is not None and "gpu_name" in kernel.eval_worker_info:
-            eval_worker_info_reference = kernel.eval_worker_info
-        elif kernel.eval_worker_info is not None and len(kernel.eval_worker_info) == 1:
-            eval_worker_info_reference = next(iter(kernel.eval_worker_info.values()))
+        profiler_data_reference_raw, eval_worker_info_reference_raw = (
+            kernel.profiler_data_reference,
+            kernel.eval_worker_info,
+        )
+    # Truly old kernels (pre-dating the profiler_data_reference column) embedded reference data
+    # directly in profiler_data under "<profiler>_ref" keys. Distinguish that from a kernel that
+    # simply was never profiled against a reference (e.g. test_reference: false) — the latter must
+    # not fall into the old-format path, which would look up the wrong (empty) worker info.
+    use_old_reference_format = profiler_data_reference_raw is None and any(
+        k.endswith("_ref") for arch_data in profiler_data_by_arch.values() for k in arch_data
+    )
+    profiler_data_reference_by_arch = normalize_profiler_data(profiler_data_reference_raw, kernel.gpu_arch)
+
+    # Union of archs with custom data and archs with reference-only data
+    archs = list(dict.fromkeys([*profiler_data_by_arch, *profiler_data_reference_by_arch])) or ["unknown"]
+
+    state = {"arch": archs[0]}
+
+    def _on_arch_change(e):
+        state["arch"] = e.value
+        kernel_content.refresh()
 
     with ui.row().classes("items-end mb-4"):
         ui.label(f"Kernel Roofline for ID: {kernel_id}").classes("text-xl")
@@ -1110,74 +1246,109 @@ div.nicegui-code * > pre {
         ui.button("Kernel Detail", on_click=lambda: ui.navigate.to(f"/kernel/{kernel_id}")).props(
             "icon=info flat no-caps size=md"
         )
-        write_trace_and_create_traceviewer_button(kernel, kernel_id).classes("ml-4")
 
-    if kernel is None:
-        ui.label("Kernel not found").classes("text-red-500")
-        return
-    with ui.expansion("Worker info").classes("self-start mb-2"):
+    with ui.row().classes("items-center mb-4"):
+        ui.label("Showing roofline analysis for platform:").classes("text-xl font-bold")
+        if len(archs) > 1:
+            ui.select(archs, value=state["arch"], on_change=_on_arch_change).classes("w-40 text-lg")
+        else:
+            ui.label(archs[0] if archs[0] != "unknown" else "-").classes("text-xl")
+
+    @ui.refreshable
+    def kernel_content():
+        selected_arch = state["arch"]
+        arch_profiler_data = profiler_data_by_arch.get(selected_arch, {})
+        eval_worker_info = (
+            (kernel.eval_worker_info or {}).get(selected_arch) or _flatten_worker_info(kernel.eval_worker_info) or {}
+        )
+        eval_worker_info_reference = (
+            (eval_worker_info_reference_raw or {}).get(selected_arch)
+            or _flatten_worker_info(eval_worker_info_reference_raw)
+            or {}
+        )
+
+        with ui.row().classes("items-center mb-2"):
+            write_trace_and_create_traceviewer_button(kernel, kernel_id, selected_arch)
+
+        with ui.expansion("Worker info").classes("self-start mb-2"):
+            with ui.row().classes("grid grid-cols-8 min-w-full"):
+                with ui.column().classes("col-span-4 gap-0"):
+                    if not eval_worker_info:
+                        ui.label("No worker info available")
+                    else:
+                        for key, value in sorted(eval_worker_info.items()):
+                            with ui.row().classes():
+                                ui.label(key).classes("font-bold").style("width: 240px;")
+                                ui.label(str(value))
+                with ui.column().classes("col-span-4 gap-0"):
+                    if not eval_worker_info_reference:
+                        ui.label("No worker info for reference available")
+                    else:
+                        for key, value in sorted(eval_worker_info_reference.items()):
+                            with ui.row().classes():
+                                ui.label(key).classes("font-bold").style("width: 240px;")
+                                classes = (
+                                    "text-red-600" if eval_worker_info and eval_worker_info.get(key) != value else ""
+                                )
+                                ui.label(str(value)).classes(classes)
+
         with ui.row().classes("grid grid-cols-8 min-w-full"):
             with ui.column().classes("col-span-4 gap-0"):
-                if kernel.eval_worker_info is None:
-                    ui.label("No worker info available")
+                if arch_profiler_data:
+                    # Custom kernel info and charts — detect available profiler (vtune takes priority over unitrace)
+                    custom_profiler_key = "vtune" if "vtune" in arch_profiler_data else "unitrace"
+                    if custom_profiler_key == "vtune":
+                        _pf = VTuneProfilerFeedback()
+                        feedback = _pf.create_feedback(arch_profiler_data.get("vtune", {}), eval_worker_info or {})
+                    else:
+                        feedback = UnitraceProfilerFeedback().create_feedback(
+                            arch_profiler_data.get("unitrace", {}),
+                            eval_worker_info or {},
+                        )
+                    render_kernel_charts_section(
+                        "Custom kernel",
+                        arch_profiler_data,
+                        eval_worker_info or {},
+                        custom_profiler_key,
+                        profiler_feedback=feedback or None,
+                        figure_templates=FIGURE_TEMPLATES,
+                    )
                 else:
-                    eval_worker_info = kernel.eval_worker_info
-                    if "gpu_name" not in eval_worker_info and len(eval_worker_info) == 1:
-                        eval_worker_info = next(iter(kernel.eval_worker_info.values()))
+                    ui.label("Custom kernel").classes("text-center w-full text-2xl font-bold")
+                    ui.label(
+                        "No custom kernel profiling data available (kernel was not profiled). "
+                        "Please set profiler_kernel: default (or a specific profiler name) to enable kernel profiling."
+                    ).classes("text-center w-full mt-4")
 
-                    for key, value in sorted(eval_worker_info.items()):
-                        with ui.row().classes():
-                            ui.label(key).classes("font-bold").style("width: 240px;")
-                            ui.label(str(value))
-            with ui.column().classes("col-span-4 gap-0"):
-                if eval_worker_info_reference is None:
-                    ui.label("No worker info for reference available")
-                else:
-                    for key, value in sorted(eval_worker_info_reference.items()):
-                        with ui.row().classes():
-                            ui.label(key).classes("font-bold").style("width: 240px;")
-                            classes = "text-red-600" if eval_worker_info and eval_worker_info.get(key) != value else ""
-                            ui.label(str(value)).classes(classes)
-
-    with ui.row().classes("grid grid-cols-8 min-w-full"):
-        with ui.column().classes("col-span-4 gap-0"):
-            # Custom kernel info and charts — detect available profiler (vtune takes priority over unitrace)
-            custom_profiler_key = "vtune" if kernel.profiler_data and "vtune" in kernel.profiler_data else "unitrace"
-            if custom_profiler_key == "vtune":
-                _pf = VTuneProfilerFeedback()
-                feedback = _pf.create_feedback(kernel.profiler_data.get("vtune", {}), eval_worker_info or {})
+            if use_old_reference_format:  # old format code path. TODO remove this eventually
+                with ui.column().classes("col-span-4 gap-0"):
+                    render_kernel_charts_section(
+                        "Reference",
+                        kernel.profiler_data or {},
+                        kernel.eval_worker_info or {},
+                        "unitrace_ref",
+                        figure_templates=FIGURE_TEMPLATES,
+                    )
             else:
-                feedback = UnitraceProfilerFeedback().create_feedback(
-                    kernel.profiler_data.get("unitrace", {}) if kernel.profiler_data else {},
-                    eval_worker_info or {},
-                )
-            content_custom = render_kernel_charts_section(
-                "custom",
-                kernel.profiler_data or {},
-                eval_worker_info or {},
-                custom_profiler_key,
-                profiler_feedback=feedback or None,
-                figure_templates=FIGURE_TEMPLATES,
-            )
+                arch_profiler_data_reference = profiler_data_reference_by_arch.get(selected_arch)
+                with ui.column().classes("col-span-4 gap-0"):
+                    if arch_profiler_data_reference is not None:
+                        # Reference profiler data and charts
+                        ref_profiler_key = "vtune" if "vtune" in arch_profiler_data_reference else "unitrace"
+                        render_kernel_charts_section(
+                            "Reference",
+                            arch_profiler_data_reference,
+                            eval_worker_info_reference or {},
+                            ref_profiler_key,
+                            figure_templates=FIGURE_TEMPLATES,
+                        )
+                    else:
+                        ui.label("Reference").classes("text-center w-full text-2xl font-bold")
+                        ui.label(
+                            "No reference profiling data available (reference was not profiled). "
+                            "Please set profiler_reference: default (or a specific profiler name) to enable "
+                            "reference profiling (and use_cached_reference: false if this task was already run "
+                            "before without profiling, so a fresh reference run is performed)."
+                        ).classes("text-center w-full mt-4")
 
-        if profiler_data_reference is not None:
-            with ui.column().classes("col-span-4 gap-0"):
-                # Reference profiler data and charts
-                ref_profiler_key = "vtune" if "vtune" in profiler_data_reference else "unitrace"
-                content_reference = render_kernel_charts_section(
-                    "reference",
-                    profiler_data_reference or {},
-                    eval_worker_info_reference or {},
-                    ref_profiler_key,
-                    figure_templates=FIGURE_TEMPLATES,
-                )
-
-        else:  # old format code path. TODO remove this eventually
-            with ui.column().classes("col-span-4 gap-0"):
-                content_reference = render_kernel_charts_section(
-                    "reference",
-                    kernel.profiler_data or {},
-                    kernel.eval_worker_info or {},
-                    "unitrace_ref",
-                    figure_templates=FIGURE_TEMPLATES,
-                )
+    kernel_content()

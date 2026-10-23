@@ -1502,6 +1502,364 @@ OPENCL_PARALLELISM_OPT_PATTERNS = {
 }
 
 # ========================================================================
+# VULKAN PATTERN DEFINITIONS (GLSL compute shaders / SPIR-V)
+# ========================================================================
+#
+# Vulkan compute shaders are written in GLSL, not OpenCL C. Despite the
+# conceptual similarity to OpenCL (explicit workgroups, shared/local memory,
+# subgroup collectives), almost none of the OpenCL-C tokens exist in GLSL
+# syntax (no get_global_id, no __local, no #pragma unroll, etc.), so Vulkan
+# gets its own pattern family keyed to real GLSL/SPIR-V vocabulary instead of
+# being aliased to the OpenCL patterns.
+
+VULKAN_MEMORY_OPT_PATTERNS = {
+    # Level 0: No patterns - absence of optimization
+    0: {},
+    # Level 1: Vector types and explicit buffer/image layout
+    1: {
+        "vector_types": {
+            "weight": 1.0,
+            "patterns": [
+                r"\b(?:vec|ivec|uvec|dvec|bvec)[234]\b",
+                r"\b(?:f16vec|f64vec)[234]\b",
+            ],
+        },
+        "image_texture_access": {
+            "weight": 0.8,
+            "patterns": [
+                r"\bimageLoad\s*\(",
+                r"\bimageStore\s*\(",
+                r"\bsampler(?:1D|2D|3D|Cube)\b",
+                r"\buniform\s+image(?:1D|2D|3D)\b",
+            ],
+        },
+        "aligned_access": {
+            "weight": 0.8,
+            "patterns": [
+                r"layout\s*\([^)]*std430",
+                r"layout\s*\([^)]*std140",
+                r"\brestrict\b",
+            ],
+        },
+        "buffer_block_access": {
+            "weight": 0.6,
+            "patterns": [
+                r"\breadonly\s+buffer\b",
+                r"\bwriteonly\s+buffer\b",
+                r"\bbuffer\s+\w+\s*\{",
+            ],
+        },
+    },
+    # Level 2: Shared (workgroup-local) memory usage and synchronization
+    2: {
+        "shared_memory": {
+            "weight": 1.0,
+            "patterns": [
+                r"\bshared\s+(?:vec|ivec|uvec|dvec|float|double|int|uint)\w*\s+\w+\s*\[",
+                r"\bshared\s+(?:vec|ivec|uvec|dvec|float|double|int|uint)\w*\s+\w+\s*;",
+            ],
+        },
+        "shared_memory_tiling": {
+            "weight": 0.9,
+            "patterns": [
+                r"shared\s+\w+\s+(?:tile|smem|slm)_?\w*\s*\[",
+                r"\[\s*(?:TILE|BLOCK|BM|BN|BK)_?\w*\s*\]\s*\[\s*(?:TILE|BLOCK|BM|BN|BK)_?\w*\s*\]",
+            ],
+        },
+        "workgroup_barriers": {
+            "weight": 1.0,
+            "patterns": [
+                r"\bbarrier\s*\(\s*\)",
+                r"\bmemoryBarrierShared\s*\(",
+                r"\bgroupMemoryBarrier\s*\(",
+            ],
+        },
+        "bank_conflict_avoidance": {
+            "weight": 0.7,
+            "patterns": [
+                r"\[\s*\w+\s*\+\s*[1-4]\s*\]",
+                r"\[\s*\w+\s*\]\s*\[\s*\w+\s*\+\s*[1-4]\s*\]",
+                r"//.*bank\s*conflict",
+            ],
+        },
+        "memory_fence_control": {
+            "weight": 0.7,
+            "patterns": [
+                r"\bmemoryBarrierBuffer\s*\(",
+                r"\bmemoryBarrier\s*\(\s*\)",
+                r"\bcoherent\b",
+            ],
+        },
+    },
+    # Level 3: Register blocking, double buffering, unrolling, push constants
+    3: {
+        "register_blocking": {
+            "weight": 1.0,
+            "patterns": [
+                r"(?:vec|ivec|uvec|float|double)\w*\s+(?:reg|frag|acc|tile)_?\w*\s*\[\s*\d+\s*\]",
+                r"(?:vec|ivec|uvec|float|double)\w*\s+(?:reg|frag|acc)_?\w*\s*\[\s*\d+\s*\]\s*\[\s*\d+\s*\]",
+            ],
+        },
+        "double_buffering": {
+            "weight": 0.9,
+            "patterns": [
+                r"(?:buffer|buf|tile|smem|shared)_?[AB01]\s*\[",
+                r"(?:ping|pong)_?(?:buffer|buf|tile)",
+                r"(?:stage|buffer|tile)_?(?:idx|index)\s*\^\s*1",
+                r"\[\s*\d+\s*%\s*2\s*\]",
+            ],
+        },
+        "unroll_directives": {
+            "weight": 0.7,
+            "patterns": [
+                r"\[\[unroll\]\]",
+                r"GL_EXT_control_flow_attributes",
+            ],
+        },
+        "push_constant_tuning": {
+            "weight": 0.5,
+            "patterns": [
+                r"layout\s*\([^)]*push_constant",
+                r"\bpush_constant\b",
+            ],
+        },
+    },
+}
+
+VULKAN_COMPUTE_OPT_PATTERNS = {
+    # Level 0: No patterns - multi-pass naive algorithms
+    0: {},
+    # Level 1: Operation fusion and fast built-in math
+    1: {
+        "fma_operations": {
+            "weight": 1.0,
+            "patterns": [
+                r"\bfma\s*\(",
+            ],
+        },
+        "fused_accumulation": {
+            "weight": 0.6,
+            "patterns": [
+                r"\w+\s*\+=\s*\w+\s*\*\s*\w+",
+                r"\w+\s*=\s*fma\s*\(",
+            ],
+        },
+        "fast_builtin_math": {
+            "weight": 0.5,
+            "patterns": [
+                r"\binversesqrt\s*\(",
+                r"\bexp2\s*\(",
+                r"\blog2\s*\(",
+            ],
+        },
+    },
+    # Level 2: Single-pass / streaming algorithms with subgroup reductions
+    2: {
+        "group_reduce": {
+            "weight": 1.0,
+            "patterns": [
+                r"\bsubgroupAdd\s*\(",
+                r"\bsubgroupMax\s*\(",
+                r"\bsubgroupMin\s*\(",
+            ],
+        },
+        "atomic_accumulation": {
+            "weight": 0.9,
+            "patterns": [
+                r"\batomicAdd\s*\(",
+                r"\batomicMax\s*\(",
+                r"\batomicMin\s*\(",
+                r"\batomicExchange\s*\(",
+            ],
+        },
+        "online_algorithm_indicators": {
+            "weight": 0.8,
+            "patterns": [
+                r"running_(?:max|min|sum|mean|var)",
+                r"(?:online|streaming)_(?:max|min|sum|softmax)",
+                r"(?:local|partial)_(?:max|min|sum)\s*=",
+            ],
+        },
+        "single_pass_comments": {
+            "weight": 0.5,
+            "patterns": [
+                r"//\s*[Ss]ingle[- ]?pass",
+                r"//\s*[Ss]treaming",
+                r"//\s*[Oo]nline\s+(?:softmax|algorithm|reduction)",
+            ],
+        },
+        "welford_pattern": {
+            "weight": 1.0,
+            "patterns": [
+                r"delta\s*=.*-\s*mean",
+                r"mean\s*\+=.*delta.*(?:count|n|i)",
+                r"M2\s*\+=",
+            ],
+        },
+    },
+    # Level 3: Advanced algorithmic transformations (tiled/blocked/subgroup scans)
+    3: {
+        "tiled_algorithm": {
+            "weight": 1.0,
+            "patterns": [
+                r"for\s*\([^)]*(?:TILE|BLOCK|BM|BN|BK|tile|block)_?\w*\s*[+<]",
+                r"(?:tile|block)_?(?:start|offset|idx|id)\s*=",
+                r"(?:num|n)_?(?:tiles|blocks)\s*=",
+            ],
+        },
+        "subgroup_matrix_or_shuffle": {
+            "weight": 0.9,
+            "patterns": [
+                r"\bsubgroupShuffle\s*\(",
+                r"\bsubgroupShuffleDown\s*\(",
+                r"\bsubgroupShuffleUp\s*\(",
+                r"\bsubgroupBroadcast\s*\(",
+            ],
+        },
+        "scan_algorithms": {
+            "weight": 1.0,
+            "patterns": [
+                r"\bsubgroupInclusiveAdd\s*\(",
+                r"\bsubgroupExclusiveAdd\s*\(",
+                r"inclusive_scan",
+                r"exclusive_scan",
+            ],
+        },
+        "recomputation_tradeoff": {
+            "weight": 0.7,
+            "patterns": [
+                r"//\s*[Rr]ecompute",
+                r"//\s*[Ff]lash",
+                r"//\s*[Bb]lock[- ]?wise",
+                r"scale\s*=.*exp\s*\(.*-.*max",
+            ],
+        },
+        "tile_size_constants": {
+            "weight": 0.6,
+            "patterns": [
+                r"(?:constexpr|const|#define)\s+(?:int\s+)?(?:TILE|BLOCK|BM|BN|BK|TM|TN|TK)_?\w*\s*[=\s]\s*\d+",
+                r"layout\s*\([^)]*constant_id\s*=",
+            ],
+        },
+    },
+}
+
+VULKAN_PARALLELISM_OPT_PATTERNS = {
+    # Level 0: No patterns - single invocation only
+    0: {},
+    # Level 1: Workgroup invocation indexing and barriers
+    1: {
+        "invocation_indexing": {
+            "weight": 1.0,
+            "patterns": [
+                r"\bgl_GlobalInvocationID\b",
+                r"\bgl_LocalInvocationID\b",
+                r"\bgl_WorkGroupID\b",
+                r"\bgl_LocalInvocationIndex\b",
+            ],
+        },
+        "workgroup_barrier": {
+            "weight": 1.0,
+            "patterns": [
+                r"\bbarrier\s*\(\s*\)",
+                r"\bmemoryBarrierShared\s*\(",
+                r"\bgroupMemoryBarrier\s*\(",
+            ],
+        },
+        "workgroup_tree_reduction": {
+            "weight": 0.9,
+            "patterns": [
+                r"for\s*\([^)]*\bs\s*>>=\s*1",
+                r"\bstride\s*>>=\s*1",
+                r">>=\s*1\s*\)\s*\{",
+            ],
+        },
+        "fixed_local_size": {
+            "weight": 0.7,
+            "patterns": [
+                r"layout\s*\([^)]*local_size_x",
+            ],
+        },
+    },
+    # Level 2: Subgroup intrinsics
+    2: {
+        "subgroup_identity": {
+            "weight": 1.0,
+            "patterns": [
+                r"\bgl_SubgroupID\b",
+                r"\bgl_NumSubgroups\b",
+                r"\bgl_SubgroupInvocationID\b",
+                r"\bgl_SubgroupSize\b",
+            ],
+        },
+        "subgroup_collectives": {
+            "weight": 1.0,
+            "patterns": [
+                r"\bsubgroupAdd\s*\(",
+                r"\bsubgroupMax\s*\(",
+                r"\bsubgroupMin\s*\(",
+                r"\bsubgroupBroadcast\s*\(",
+            ],
+        },
+        "subgroup_shuffle": {
+            "weight": 1.0,
+            "patterns": [
+                r"\bsubgroupShuffle\s*\(",
+                r"\bsubgroupShuffleDown\s*\(",
+                r"\bsubgroupShuffleUp\s*\(",
+                r"\bsubgroupShuffleXor\s*\(",
+            ],
+        },
+        "subgroup_extension": {
+            "weight": 0.8,
+            "patterns": [
+                r"GL_KHR_shader_subgroup_\w+",
+                r"#\s*extension\s+GL_KHR_shader_subgroup",
+            ],
+        },
+    },
+    # Level 3: Hierarchical and multi-level coordination
+    3: {
+        "multi_level_coordination": {
+            "weight": 1.0,
+            "patterns": [
+                r"subgroup\w*.*barrier",
+                r"barrier.*subgroup\w*",
+                r"shared\s+\w+.*subgroup\w*\s*\(",
+            ],
+        },
+        "hierarchical_indexing": {
+            "weight": 0.9,
+            "patterns": [
+                r"gl_WorkGroupID.*gl_SubgroupID",
+                r"\bgl_NumWorkGroups\b",
+                r"gl_WorkGroupSize.*gl_SubgroupSize",
+            ],
+        },
+        "warp_or_subgroup_tiling": {
+            "weight": 0.9,
+            "patterns": [
+                r"(?:WARP|SG|SUBGROUP)_(?:M|N|K|SIZE|TILE)",
+                r"(?:warp|sg|subgroup)_(?:row|col|id|idx)",
+                r"lane_id\s*=",
+            ],
+        },
+        "specialization_constants": {
+            "weight": 0.7,
+            "patterns": [
+                r"layout\s*\([^)]*constant_id\s*=",
+            ],
+        },
+        "push_constant_dispatch": {
+            "weight": 0.6,
+            "patterns": [
+                r"layout\s*\([^)]*push_constant",
+            ],
+        },
+    },
+}
+
+# ========================================================================
 # ESIMD PATTERN DEFINITIONS (Intel GPU Specific)
 # ========================================================================
 #

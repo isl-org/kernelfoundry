@@ -17,6 +17,8 @@ import sysconfig
 import warnings
 from abc import ABC, abstractmethod
 
+from kernelfoundry.eval_pipeline.utils.gpu_specs import ARCH_TO_OCLOC_DEVICE
+
 try:
     from torch.utils.cpp_extension import _get_pybind11_abi_build_flags, include_paths, TORCH_LIB_PATH
 except ImportError:
@@ -26,12 +28,53 @@ except ImportError:
 IS_WINDOWS = sys.platform == "win32"
 
 
+def _ocloc_devices(gpu_arch: str) -> str:
+    """Translate a gpu_arch string into device names ocloc accepts.
+
+    A gpu_arch may name several targets, as in "lnl,ptl". ocloc rejects the whole list when a
+    single entry is a SKU name, so each entry is translated on its own.
+    """
+    targets = [arch.strip() for arch in gpu_arch.split(",")]
+    return ",".join(ARCH_TO_OCLOC_DEVICE.get(target, target) for target in targets)
+
+
 def _quote(path: str | os.PathLike) -> str:
     """Quote a path for the shell that will run the command."""
     text = str(path)
     if IS_WINDOWS:
         return f'"{text}"' if " " in text else text
     return shlex.quote(text)
+
+
+def compile_glsl_to_spirv(
+    src: str | Path,
+    out: str | Path | None = None,
+    glslang_validator: str = "glslangValidator",
+    extra_args: list[str] | None = None,
+) -> Path:
+    """Compiles a GLSL compute shader to SPIR-V via glslangValidator.
+
+    Used from a Vulkan task's ``build()`` method; the resulting ``.spv`` path is what
+    :func:`kernelfoundry.eval_pipeline.utils.vulkan_support.create_vulkan_compute_context` expects.
+
+    Args:
+        src: Path to the `.comp` GLSL source file.
+        out: Output `.spv` path; defaults to `src` with its suffix replaced by `.spv`.
+        glslang_validator: Name/path of the glslangValidator executable.
+        extra_args: Additional CLI args to pass through to glslangValidator.
+
+    Returns:
+        The path to the compiled SPIR-V module.
+
+    Raises:
+        subprocess.CalledProcessError: If compilation fails, with the compiler's stdout/stderr
+            attached to the exception.
+    """
+    src = Path(src)
+    out = Path(out) if out is not None else src.with_suffix(".spv")
+    cmd = [glslang_validator, "-V", str(src), "-o", str(out), *(extra_args or [])]
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+    return out
 
 
 def extension_suffix() -> str:
@@ -80,7 +123,9 @@ class BaseKernelCompiler(ABC):
         self.extension_name = extension_name
         self.src = src
         self.build_dir = build_dir
-        self.gpu_arch = gpu_arch
+        # Queues and specs name Battlemage SKUs, ocloc only knows the platform. Normalize here
+        # so both TORCH_XPU_ARCH_LIST and the -device flag get a name the compiler accepts.
+        self.gpu_arch = _ocloc_devices(gpu_arch)
         self.timeout = timeout
         self.verbose = verbose
 
@@ -173,6 +218,17 @@ class TorchCompiler(BaseKernelCompiler):
 class IcpxCompiler(BaseKernelCompiler):
     """Compiler class for SYCL programs using the Intel icpx compiler."""
 
+    def __init__(
+        self,
+        *args,
+        spirv_translator_options: str | None = None,
+        backend_compile_options: str | None = None,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.spirv_translator_options = spirv_translator_options
+        self.backend_compile_options = backend_compile_options
+
     def compile(self):
         """Compile the SYCL program into a PyTorch extension."""
 
@@ -229,7 +285,7 @@ class IcpxCompiler(BaseKernelCompiler):
             cflags.append("-fPIC")
         else:
             cflags.append("-fms-runtime-lib=dll")
-        cflags.append("-std=c++17")
+        cflags.append("-std=c++20")
 
         sycl_cflags = []
         sycl_cflags.append("-fsycl")
@@ -257,15 +313,32 @@ class IcpxCompiler(BaseKernelCompiler):
             "-o",
             _quote(sycl_dlink_file),
             "-fsycl",
-            "-fsycl-link",
-            "--offload-compress",
-            "-fsycl-targets=spir64_gen,spir64",
         ]
+        if self.spirv_translator_options:
+            for target in ("spir64_gen", "spir64"):
+                cmd.extend(
+                    [
+                        f"-Xspirv-translator={target}",
+                        _quote(self.spirv_translator_options),
+                    ]
+                )
+        cmd.extend(
+            [
+                "-fsycl-link",
+                "--offload-compress",
+                "-fsycl-targets=spir64_gen,spir64",
+            ]
+        )
         if IS_WINDOWS:
             cmd.append("-fms-runtime-lib=dll")
+        xs_args = []
         arch_list = self.gpu_arch
         if arch_list != "":
-            cmd += [f'-Xs "-device {arch_list}"']
+            xs_args.append(f"-device {arch_list}")
+        if self.backend_compile_options:
+            xs_args.append(self.backend_compile_options)
+        if xs_args:
+            cmd += [f'-Xs "{" ".join(xs_args)}"']
         cmd = " ".join(cmd)
         return self._run_command(cmd, "Generating SYCL device binary")
 

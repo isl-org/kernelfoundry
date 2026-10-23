@@ -1,6 +1,7 @@
 """Helpers for configuring logging and recording raw process results."""
 
 import logging
+import sys
 from pathlib import Path
 
 from kernelfoundry.eval_pipeline.task import BuildResult, ProcessResult, TestResult
@@ -134,6 +135,13 @@ def setup_logging(logfile: str | Path, logging_level=None):
     """
     if logging_level is None:
         logging_level = logging.getLogger().level
+
+    # Compiler output can contain UTF-8 that a Windows console configured with cp1252 cannot encode.
+    if sys.platform == "win32":
+        for stream in (sys.stdout, sys.stderr):
+            reconfigure = getattr(stream, "reconfigure", None)
+            if reconfigure is not None:
+                reconfigure(errors="replace")
 
     def raw_root(message, *args, **kwargs):
         logging.log(RAW, message, *args, **kwargs)
