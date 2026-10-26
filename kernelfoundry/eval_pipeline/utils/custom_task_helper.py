@@ -1,13 +1,13 @@
 """Functions for analyzing and manipulating custom tasks."""
 
+import ast
 import os
-import sys
 from pathlib import Path
-import subprocess
 from functools import partial
 
-from kernelfoundry import PACKAGE_ROOT
 from kernelfoundry.eval_pipeline.utils.memory_file_map import MemoryFileMap
+
+_PERFORMANCE_MARK = "performance"
 
 __all__ = [
     "allowed_text_file_extensions",
@@ -18,6 +18,7 @@ __all__ = [
     "get_config",
     "update_block",
     "blocks_to_str",
+    "block_labels",
 ]
 
 
@@ -39,6 +40,8 @@ def allowed_text_file_extensions() -> list[str]:
         ".md",
         ".txt",
         ".cl",
+        ".cm",
+        ".comp",
         ".yml",
         ".yaml",
         ".sh",
@@ -53,8 +56,35 @@ def allowed_text_file_extensions() -> list[str]:
     ]
 
 
+def _pytest_marks(decorator_list: list[ast.expr]) -> set[str]:
+    """Returns the `pytest.mark.<name>` marker names applied via a decorator list."""
+    marks = set()
+    for dec in decorator_list:
+        node = dec.func if isinstance(dec, ast.Call) else dec
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute) and node.value.attr == "mark":
+            marks.add(node.attr)
+    return marks
+
+
+def _pytestmark_assignment_marks(body: list[ast.stmt]) -> set[str]:
+    """Returns marker names set via a `pytestmark = pytest.mark.x` (or list of those) statement."""
+    marks = set()
+    for stmt in body:
+        if not (
+            isinstance(stmt, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "pytestmark" for t in stmt.targets)
+        ):
+            continue
+        values = stmt.value.elts if isinstance(stmt.value, (ast.List, ast.Tuple)) else [stmt.value]
+        marks |= _pytest_marks(values)
+    return marks
+
+
 def get_test_names(task_root: Path | str) -> dict[str, list[str]]:
-    """Returns the names of the correctnes and profile tests defined in task.py.
+    """Returns the names of the correctness and profile tests defined in task.py.
+
+    Test discovery is done by statically parsing task.py's AST rather than importing it (e.g. via
+    pytest collection), since importing it may require dependencies - like a GPU runtime - that are
+    only available inside the container the task is later built and tested in.
 
     Args:
         task_root (Path | str): Path to the root directory of the custom task.
@@ -64,54 +94,22 @@ def get_test_names(task_root: Path | str) -> dict[str, list[str]]:
             Each key maps to a list of test names.
     """
     task_root = Path(task_root)
-    env = os.environ.copy()
-    env["PYTHONPATH"] = PACKAGE_ROOT.parent.as_posix() + os.pathsep + env.get("PYTHONPATH", "")
+    tree = ast.parse((task_root / "task.py").read_text())
+    module_marks = _pytestmark_assignment_marks(tree.body)
 
-    # Get all tests
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-q",
-            "--collect-only",
-            f"--rootdir={str(task_root)}",
-            str(task_root / "task.py"),
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-    )
     all_tests = []
-    for line in result.stdout.splitlines():
-        if "task.py::" in line:
-            test_name = line.split("task.py::")[1].strip()
-            all_tests.append(test_name)
-
-    # Get profile tests
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-q",
-            "--collect-only",
-            f"--rootdir={str(task_root)}",
-            "-m",
-            "performance",
-            str(task_root / "task.py"),
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to collect profile tests:\n{result.stdout}\n{result.stderr}")
     profile_tests = []
-    for line in result.stdout.splitlines():
-        if "task.py::" in line:
-            test_name = line.split("task.py::")[1].strip()
-            profile_tests.append(test_name)
+    for node in tree.body:
+        if not (isinstance(node, ast.ClassDef) and node.name.startswith("Test")):
+            continue
+        class_marks = module_marks | _pytest_marks(node.decorator_list) | _pytestmark_assignment_marks(node.body)
+        for item in node.body:
+            if not (isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name.startswith("test")):
+                continue
+            test_name = f"{node.name}::{item.name}"
+            all_tests.append(test_name)
+            if _PERFORMANCE_MARK in class_marks | _pytest_marks(item.decorator_list):
+                profile_tests.append(test_name)
 
     # Correctness tests are all tests minus profile tests
     correctness_tests = [test for test in all_tests if test not in profile_tests]
@@ -159,21 +157,31 @@ def get_block(task_root: Path | str | MemoryFileMap, key: str) -> dict[str, str]
         in_block = False
         current_block_lines = []
         block_contents = []  # list of line-lists, one per block found in this file
-        for line in lines:
-            if f"[{key}_START]" in line:
+        for line_no, line in enumerate(lines, start=1):
+            has_start = f"[{key}_START]" in line
+            has_end = f"[{key}_END]" in line
+            if has_start and has_end:
+                raise ValueError(
+                    f"[{key}_START] and [{key}_END] found on the same line ({file}:{line_no}). "
+                    f"They must be on separate lines, each on its own line."
+                )
+            if has_start:
                 if in_block:
-                    raise ValueError(f"Nested [{key}_START] found in {file}")
+                    raise ValueError(f"Nested [{key}_START] found in {file}:{line_no}")
                 in_block = True
                 current_block_lines = []
                 continue
-            if f"[{key}_END]" in line:
+            if has_end:
                 if not in_block:
-                    raise ValueError(f"[{key}_END] found without matching [{key}_START] in {file}")
+                    raise ValueError(f"[{key}_END] found without matching [{key}_START] in {file}:{line_no}")
                 in_block = False
                 block_contents.append(current_block_lines)
                 continue
             if in_block:
                 current_block_lines.append(line)
+
+        if in_block:
+            raise ValueError(f"[{key}_START] found in {file} without a matching [{key}_END]")
 
         contents = []
         for block_lines in block_contents:
@@ -309,7 +317,10 @@ def blocks_to_str(blocks: dict[str, list[str]]) -> str:
     """Converts a blocks dict (file_path -> list[content]) to a single string.
 
     For a single block total, returns the content directly. For multiple blocks,
-    combines them with ### Block: file_path ### separator lines. Split back with::
+    combines them with ### Block: <label> ### separator lines, using the same labels
+    (disambiguated with a "#index" suffix for files with more than one block) as
+    ``block_labels``, so headers stay unique and match what ``extract_multi_block_code``
+    expects. Split back with::
 
         re.split(r'^### Block: (.+?) ###$', text, flags=re.MULTILINE)
 
@@ -319,11 +330,34 @@ def blocks_to_str(blocks: dict[str, list[str]]) -> str:
     Returns:
         str: The combined string representation of the blocks.
     """
-    all_blocks = [(fp, c) for fp, contents in blocks.items() for c in contents]
+    all_blocks = [c for contents in blocks.values() for c in contents]
     if len(all_blocks) == 1:
-        return all_blocks[0][1]
-    parts = [f"### Block: {fp} ###\n{c}" for fp, c in all_blocks]
+        return all_blocks[0]
+    labels = block_labels(blocks)
+    parts = [f"### Block: {label} ###\n{c}" for label, c in zip(labels, all_blocks)]
     return "\n".join(parts)
+
+
+def block_labels(blocks: dict[str, list[str]]) -> list[str]:
+    """Ordered list of labels identifying each block in a (file_path -> list[content]) blocks dict.
+
+    A file's blocks are labeled with just its path when it has a single block; when a file has
+    multiple blocks, each is disambiguated with a block-index suffix (``path#0``, ``path#1``, ...).
+    Both prompt construction and LLM-response parsing use this so multi-block responses round-trip
+    to the right ``(path, block_index)`` regardless of iteration order.
+
+    Args:
+        blocks: A dictionary mapping file paths to lists of block contents.
+
+    Returns:
+        list[str]: Labels, one per block, in the same order as iterating ``blocks``.
+    """
+    labels = []
+    for path, contents in blocks.items():
+        multi = len(contents) > 1
+        for idx in range(len(contents)):
+            labels.append(f"{path}#{idx}" if multi else path)
+    return labels
 
 
 def dict_to_yaml_str(data: dict, indent: int = 0) -> str:

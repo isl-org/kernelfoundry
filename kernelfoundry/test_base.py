@@ -86,6 +86,8 @@ class TestBase(ABC):
         gpu_arch: str,
         timeout: int = 120,
         backend: str = "torch",
+        spirv_translator_options: str | None = None,
+        backend_compile_options: str | None = None,
     ) -> list[str]:
         """Compiles the source file to a PyTorch extension.
 
@@ -96,6 +98,10 @@ class TestBase(ABC):
             gpu_arch (str): GPU architecture string.
             timeout (int): Timeout for each compilation step in seconds.
             backend (str): The backend to use for compilation. This is either 'torch' (default) or 'icpx'.
+            spirv_translator_options (str | None): Optional options passed to the SPIR-V translator
+                for both spir64_gen and spir64 during an icpx device link.
+            backend_compile_options (str | None): Optional options passed via ``-Xs`` to the AOT
+                device compiler backend during an icpx device link, e.g. ``-ze-opt-large-register-file``.
 
         Returns:
             list[str]: List of paths to the compiled extensions.
@@ -109,7 +115,7 @@ class TestBase(ABC):
 
         # temporary directory to store build files
         with TemporaryDirectory() as build_dir:
-            compiler = Compiler(
+            compiler_kwargs = dict(
                 extension_name=extension_name,
                 src=str(src),
                 build_dir=build_dir,
@@ -117,6 +123,10 @@ class TestBase(ABC):
                 timeout=timeout,
                 verbose=True,
             )
+            if backend == "icpx":
+                compiler_kwargs["spirv_translator_options"] = spirv_translator_options
+                compiler_kwargs["backend_compile_options"] = backend_compile_options
+            compiler = Compiler(**compiler_kwargs)
             status = compiler.compile()
             if status["returncode"] != 0:
                 if status.get("phase") == "load":

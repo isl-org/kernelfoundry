@@ -2,7 +2,7 @@
 
 from sqlalchemy import create_engine as _create_engine, inspect as _inspect, text as _text
 from sqlalchemy.orm import sessionmaker as _sessionmaker
-from kernelfoundry.eval_pipeline.database.tables import Base, Kernel, Task, Job, JobLog, Rag
+from kernelfoundry.eval_pipeline.database.tables import Base, Kernel, Task, Job, JobLog, Rag, ReferencePerformance
 import os
 import sys
 from urllib.parse import quote_plus
@@ -25,11 +25,14 @@ __all__ = [
     "update_job_token_usage",
     "add_job_log",
     "add_job_log_batch",
+    "get_reference_performance",
+    "save_reference_performance",
     "Kernel",
     "Task",
     "Rag",
     "Job",
     "JobLog",
+    "ReferencePerformance",
     "engine_readonly",
     "engine_insert",
     "SessionRO",
@@ -185,8 +188,8 @@ def add_ignore_errors(item):
         return True
     except Exception as e:
         e_str = str(e).lower()
-        if "unique constraint" in e_str and "task" in e_str:
-            logging.info("Info: Task already in database (not inserting it again due to unique ID constraint).")
+        if "unique constraint" in e_str:
+            logging.info("Info: Row already in database (not inserting it again due to unique constraint).")
         else:
             logging.warning(f"Could not add item to database. Error: {e}")
     return False
@@ -406,3 +409,59 @@ def add_job_log_batch(logs: list[dict]) -> bool:
     except Exception as e:
         print(f"Warning: Could not add job logs batch to database. Error: {e}")
     return False
+
+
+def get_reference_performance(task_hash: str, gpu_arch: str) -> ReferencePerformance | None:
+    """Look up a cached reference benchmark result for the given task content hash and gpu_arch.
+
+    Args:
+        task_hash (str): SHA256 hash of the task's reference-relevant files (see Task.reference_hash).
+        gpu_arch (str): GPU architecture the reference should have been benchmarked on.
+
+    Returns:
+        ReferencePerformance | None: The cached row if found, None otherwise (including on error).
+    """
+    try:
+        with SessionRO() as session:
+            return session.query(ReferencePerformance).filter_by(task_hash=task_hash, gpu_arch=gpu_arch).first()
+    except Exception as e:
+        logging.warning(f"Could not look up cached reference performance. Error: {e}")
+    return None
+
+
+def save_reference_performance(
+    task_name: str | None,
+    task_hash: str,
+    gpu_arch: str,
+    build_result_reference: dict | None,
+    test_result_reference: dict | None,
+    runtime_stats: dict | None = None,
+    job_id: int | None = None,
+) -> bool:
+    """Store a freshly-computed reference benchmark result for later reuse.
+
+    A unique constraint on (task_hash, gpu_arch) means a concurrent duplicate insert is ignored
+    rather than erroring, same as add_ignore_errors is used elsewhere.
+
+    Args:
+        task_name (str | None): Human-readable task name, for display/debugging only.
+        task_hash (str): SHA256 hash of the task's reference-relevant files.
+        gpu_arch (str): GPU architecture the reference was benchmarked on.
+        build_result_reference (dict | None): Encoded BuildResult for the reference.
+        test_result_reference (dict | None): Encoded TestResult for the reference.
+        runtime_stats (dict | None): Human-readable summary of per-benchmark runtime stats.
+        job_id (int | None): Job that produced this cache entry.
+
+    Returns:
+        bool: True if the row was inserted, False otherwise (including if one already existed).
+    """
+    item = ReferencePerformance(
+        task_name=task_name,
+        task_hash=task_hash,
+        gpu_arch=gpu_arch,
+        build_result_reference=build_result_reference,
+        test_result_reference=test_result_reference,
+        runtime_stats=runtime_stats,
+        job_id=job_id,
+    )
+    return add_ignore_errors(item)

@@ -10,6 +10,9 @@ from kernelfoundry.eval_pipeline.task import Task, BuildResult, TestResult, Proc
 from kernelfoundry.algorithm.utils.score import get_timing_stats, compute_runtime_improvement, combine_gpu_arch_results
 from kernelfoundry.algorithm.utils.eval_helper import *
 from kernelfoundry.eval_pipeline.profiler_feedback import (
+    ROOFLINE_ALL_BENCHMARKS_KEY,
+    compute_analytical_roofline_pct,
+    compute_roofline_summary,
     get_profiler_feedback_class,
     get_reference_language_for_profiling,
 )
@@ -93,6 +96,24 @@ class Evaluator:
         logging.raw(name, extra=log_extra)
         print(output_string)  # also print to console for easier debugging
 
+    #: Fragments of the lines IGC emits about register pressure on a *successful* build:
+    #:   warning: kernel _ZTS9Q6KMatmul  compiled SIMD16 allocated 256 regs and spilled around 46
+    #:   warning: [RetryManager] Start recompilation of the kernel
+    #:   in kernel: 'typeinfo name for Q6KMatmul'
+    _RESOURCE_HINTS = (" regs", "spilled", "RetryManager", "in kernel:")
+
+    def log_compiler_resource_report(self, build_result: BuildResult | None) -> None:
+        """Put the compiler's register lines into the evaluation log, verbatim.
+        A build can succeed and still say the kernel spilled, this should be in the eval log.
+        """
+        if build_result is None or build_result.result is None:
+            return
+        out, err = build_result.result.stdout or "", build_result.result.stderr or ""
+        lines = [ln.strip() for ln in (out + "\n" + err).splitlines() if any(h in ln for h in self._RESOURCE_HINTS)]
+        if lines:
+            # dict.fromkeys dedupes a retried compile's repeats while keeping the order.
+            self.log("Compiler resource report:\n" + "\n".join(dict.fromkeys(lines)))
+
     def log_raw_result(self, result: BuildResult | TestResult | None, prefix: str | None = None) -> None:
         if not self.dump_raw_outputs:
             return
@@ -168,6 +189,7 @@ class Evaluator:
         # save build result
         if task.build_result:
             self.log_raw_result(task.build_result, prefix="build")
+            self.log_compiler_resource_report(task.build_result)
             metadata["compile_worker_info"] = task.build_result.worker_info
 
         # restore backup of the reference build result (may be needed for testing custom to compare to reference)
@@ -329,6 +351,10 @@ class Evaluator:
                 eval_log=self._eval_log.getvalue(),
             )
         self.log(f"\nTest result on platform {test_result.worker_info['gpu_name']}:")
+        # correctness stats is a dictionary of the form {"test1": True, "test2": False, ...}
+        correctness_stats = {}
+        if test_result.correctness_result.output_data is not None:
+            correctness_stats = test_result.correctness_result.output_data.get("correctness") or {}
         if test_result.correctness_result.returncode != 0:
             self.log(postprocess_pytest_output(test_result.correctness_result))
             if test_result.correctness_result.message:
@@ -343,18 +369,22 @@ class Evaluator:
                 # Note that this will be the score for tasks that do not have shape tests too
                 perf_score = 3  # shape mismatch
 
-            return EvalResult(
+            ker = EvalResult(
                 compiled=True,
                 correctness=False,
+                correctness_stats=correctness_stats,
                 perf_score=perf_score,
                 metadata=metadata,
                 eval_log=self._eval_log.getvalue(),
             )
+            return ker
 
         self.log(postprocess_pytest_output(test_result.correctness_result))
         self.log("The kernel compiles and is correct, great job!")
 
-        ker = EvalResult(compiled=True, correctness=True, perf_score=5, metadata=metadata)
+        ker = EvalResult(
+            compiled=True, correctness=True, correctness_stats=correctness_stats, perf_score=5, metadata=metadata
+        )
 
         # -------- Part 2: runtimes (without speedup so far) --------
         # runtime stats is a dictionary of the form {"benchmark1": {"mean": ..., "std": ...}, "benchmark2": {...}, ...}
@@ -385,32 +415,56 @@ class Evaluator:
             profiler_feedback_class = get_profiler_feedback_class(
                 language, gpu_arch, self.config.get("profiler_kernel")
             )
-            profiler_feedback = profiler_feedback_class()
-            profiler_name = profiler_feedback.name
-            profiler_collated_data, profiler_feedback_str = (
-                profiler_feedback.collate_and_create_feedback(
-                    {k: v.output_data for k, v in test_result.trace_results.items() if v.output_data},
-                    worker_info=test_result.worker_info,
+            if profiler_feedback_class is not None:
+                profiler_feedback = profiler_feedback_class()
+                profiler_name = profiler_feedback.name
+                profiler_collated_data, profiler_feedback_str = (
+                    profiler_feedback.collate_and_create_feedback(
+                        {k: v.output_data for k, v in test_result.trace_results.items() if v.output_data},
+                        worker_info=test_result.worker_info,
+                    )
+                    if profile_custom_model
+                    else ({}, "")
                 )
-                if profile_custom_model
-                else ({}, "")
-            )
-            if profiler_collated_data:
-                ker.profiler_data[profiler_name] = profiler_collated_data
-                if profiler_feedback_str:
-                    self.log(f"\nProfiler output on platform {test_result.worker_info['gpu_name']}:")
-                    self.log(profiler_feedback_str)
+                if profiler_collated_data:
+                    ker.profiler_data[profiler_name] = profiler_collated_data
+                    roofline_by_benchmark = compute_roofline_summary(
+                        profiler_name, profiler_collated_data, test_result.worker_info
+                    )
+                    if roofline_by_benchmark:
+                        fallback_roofline = roofline_by_benchmark.get(ROOFLINE_ALL_BENCHMARKS_KEY)
+                        for benchmark_name, stats in ker.runtime_stats.items():
+                            roofline = roofline_by_benchmark.get(benchmark_name, fallback_roofline)
+                            if roofline is not None:
+                                stats["roofline"] = roofline
+                    if profiler_feedback_str:
+                        self.log(f"\nProfiler output on platform {test_result.worker_info['gpu_name']}:")
+                        self.log(profiler_feedback_str)
+
+            # Prefer an agent-derived analytical (instruction-count-independent) roofline over the
+            # instruction-count one above, per benchmark.
+            analytical_roofline = self.config.get("analytical_roofline")
+            if analytical_roofline:
+                fallback_entry = analytical_roofline.get(ROOFLINE_ALL_BENCHMARKS_KEY)
+                for benchmark_name, stats in ker.runtime_stats.items():
+                    entry = analytical_roofline.get(benchmark_name, fallback_entry)
+                    if entry is None:
+                        continue
+                    ideal_roofline = compute_analytical_roofline_pct(entry, stats.get("mean"), test_result.worker_info)
+                    if ideal_roofline is not None:
+                        stats["roofline"] = ideal_roofline
 
             if test_result_reference:
                 ref_profiler_feedback_class = get_profiler_feedback_class(
                     ref_language, gpu_arch, self.config.get("profiler_reference")
                 )
-                ref_profiler_feedback = ref_profiler_feedback_class()
-                profiler_collated_data = ref_profiler_feedback.collate_data(
-                    {k: v.output_data for k, v in test_result_reference.trace_results.items() if v.output_data},
-                )
-                if profiler_collated_data:
-                    ker.profiler_data[f"{ref_profiler_feedback.name}_ref"] = profiler_collated_data
+                if ref_profiler_feedback_class is not None:
+                    ref_profiler_feedback = ref_profiler_feedback_class()
+                    profiler_collated_data = ref_profiler_feedback.collate_data(
+                        {k: v.output_data for k, v in test_result_reference.trace_results.items() if v.output_data},
+                    )
+                    if profiler_collated_data:
+                        ker.profiler_data[f"{ref_profiler_feedback.name}_ref"] = profiler_collated_data
 
         except Exception as e:
             logging.error(f"Failed to process profiler feedback for language {language} with error: {e}")
@@ -450,9 +504,9 @@ class Evaluator:
                         ker.runtime_stats[benchmark_name]["speedup"] = SPEEDUP_IF_TIMEOUT
                     else:
                         logging.warning(
-                            f"Reference runtime for benchmark {benchmark_name} is invalid. Set speedup to low value."
+                            f"Reference runtime for benchmark {benchmark_name} is invalid. Set speedup to -1."
                         )
-                        ker.runtime_stats[benchmark_name]["speedup"] = SPEEDUP_IF_TIMEOUT  # low speedup
+                        ker.runtime_stats[benchmark_name]["speedup"] = -1
                 else:
                     logging.warning(
                         f"Benchmark {benchmark_name} not found in reference runtimes. Set speedup to low value."

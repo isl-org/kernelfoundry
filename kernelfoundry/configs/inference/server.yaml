@@ -1,15 +1,96 @@
-# Inference config with only a single model
+# Inference config, always an ensemble of up to 3 models (model_2/model_3 disabled by
+# default). For a single model, just override provider/model:
+#   inference.provider=anthropic inference.model=claude-sonnet-5
+# For an ensemble, also set model_2 (and model_3) and the matching weights, e.g. in a
+# task's config.yaml:
+# For an ensemble, also set model_2 (and model_3), e.g. in a task's config.yaml:
+#   inference:
+#     model_1:
+#       provider: openai
+#       model: gpt-6-luna
+#     model_2:
+#       provider: openai
+#       model: gpt-6-astra
+# provider is looked up in a registry (see register_inference_provider in
+# kernelfoundry.algorithm.inference_server) to pick the class to instantiate.
+
+provider: openai
+model: default
+base_url: null # set to use a custom OpenAI/Anthropic-compatible endpoint
+max_tokens: 16000
+temperature: 0.0
+num_completions: 1 # number of completions to generate
+verbose: false
+# claude-cli only
+disallow_tools: true # claude_cli only, ignored otherwise
+max_turns: 8 # claude_cli only, ignored otherwise
+effort: null # claude_cli only, ignored otherwise -- e.g. "low"/"medium"/"high"
+
+model_1:
+  provider: ${inference.provider}
+  model: ${inference.model}
+  base_url: ${inference.base_url}
+  max_tokens: ${inference.max_tokens}
+  temperature: ${inference.temperature}
+  num_completions: ${inference.num_completions}
+  verbose: ${inference.verbose}
+  disallow_tools: ${inference.disallow_tools}
+  max_turns: ${inference.max_turns}
+  effort: ${inference.effort}
+model_2:
+  provider: null # set to enable this slot, e.g. "anthropic"
+  model: default
+  max_tokens: 5000
+  temperature: 0.0
+  num_completions: 1
+  verbose: false
+  disallow_tools: true
+  max_turns: 8
+  effort: null
+model_3:
+  provider: null
+  model: default
+  max_tokens: 5000
+  temperature: 0.0
+  num_completions: 1
+  verbose: false
+  disallow_tools: true
+  max_turns: 8
+  effort: null
+
 _target_: kernelfoundry.algorithm.inference_server.LLMEnsemble
-servers:
-  - _target_: kernelfoundry.algorithm.inference_server.InferenceServer
-    server_type: "openai"
-    # Any model your provider offers works here; DEFAULT_MODELS at the top of
-    # kernelfoundry/algorithm/inference_server.py only supplies the model_name="default"
-    # fallback. Set server_type: anthropic to use a Claude model instead.
-    model_name: "gpt-5.2"
-    # maximum number of tokens for llm response (reasoning + kernel)
-    max_tokens: 16000
-    temperature: 0.0
-    num_completions: 1  # number of completions to generate
-    verbose: False
 weights: uniform
+weights_warmstart: null
+servers:
+  - _target_: ${inference_target:${inference.model_1.provider}}
+    server_type: ${inference.model_1.provider}
+    model_name: ${inference.model_1.model}
+    base_url: ${inference.model_1.base_url}
+    max_tokens: ${inference.model_1.max_tokens}
+    temperature: ${inference.model_1.temperature}
+    num_completions: ${inference.model_1.num_completions}
+    verbose: ${inference.model_1.verbose}
+    disallow_tools: ${inference.model_1.disallow_tools}
+    max_turns: ${inference.model_1.max_turns}
+    effort: ${inference.model_1.effort}
+  - _target_: ${inference_target:${inference.model_2.provider}}
+    server_type: ${inference.model_2.provider}
+    model_name: ${inference.model_2.model}
+    max_tokens: ${inference.model_2.max_tokens}
+    temperature: ${inference.model_2.temperature}
+    num_completions: ${inference.model_2.num_completions}
+    verbose: ${inference.model_2.verbose}
+    disallow_tools: ${inference.model_2.disallow_tools}
+    max_turns: ${inference.model_2.max_turns}
+    effort: ${inference.model_2.effort}
+  - _target_: ${inference_target:${inference.model_3.provider}}
+    server_type: ${inference.model_3.provider}
+    model_name: ${inference.model_3.model}
+    max_tokens: ${inference.model_3.max_tokens}
+    temperature: ${inference.model_3.temperature}
+    num_completions: ${inference.model_3.num_completions}
+    verbose: ${inference.model_3.verbose}
+    disallow_tools: ${inference.model_3.disallow_tools}
+    max_turns: ${inference.model_3.max_turns}
+    effort: ${inference.model_3.effort}
+trials_warmstart: 1

@@ -256,7 +256,7 @@ gui)
     collect_docker_args
     DOCKER_ARGS+=(--publish "${GUI_PORT}:8885")
     note "UI on http://localhost:${GUI_PORT} (reading $RUNS_DIR)"
-    invoke "${DOCKER_ARGS[@]}" "$IMAGE" python start_gui.py
+    invoke "${DOCKER_ARGS[@]}" "$IMAGE" python -m kernelfoundry.gui
     ;;
 shell)
     ensure_image

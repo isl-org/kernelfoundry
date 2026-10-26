@@ -18,20 +18,39 @@ point.
   pip install 'kernelfoundry[mcp,algo]'
   ```
 
-- **An MCP-capable coding agent**. GitHub Copilot, Claude Code and Cursor all work.
+- **An MCP-capable coding agent**. The server speaks stdio and needs no editor, so Claude Code,
+  Codex CLI, Cursor, GitHub Copilot in VS Code and any other MCP client all work.
 - **A GPU and its toolchain**. See the
   [README](https://github.com/isl-org/kernelfoundry#requirements).
 
-Register the server with your editor. `python -m kernelfoundry.mcp_server create_config`
-generates a client config interactively. Full setup, including the choice between running
-locally and submitting to a server, is in the
-[MCP server reference](https://github.com/isl-org/kernelfoundry/blob/main/kernelfoundry/mcp_server/README.md).
+Register the server with your agent. `python -m kernelfoundry.mcp_server create_config` generates
+a client config interactively, and the
+[MCP server reference](https://github.com/isl-org/kernelfoundry/blob/main/kernelfoundry/mcp_server/README.md)
+gives the literal form each client expects — they differ, and a config copied from the wrong one
+registers nothing. It also covers the choice between running locally and submitting to a server.
 
 :::{tip}
 Point your agent at
-[`AGENTS.md`](https://github.com/isl-org/kernelfoundry/blob/main/AGENTS.md) as well. It is the
-workflow contract the agent follows: the constraints, the checkpoints and the definition of
-done. Many agents discover the file on their own.
+[`agent-workflow.md`](https://github.com/isl-org/kernelfoundry/blob/main/kernelfoundry/mcp_server/agent-workflow.md)
+as well. It is the workflow contract the agent follows: the constraints, the checkpoints and the
+definition of done. It ships inside the installed package, next to the server module, so an agent
+can read it without network access.
+
+Naming it once in your opening message is enough, but Claude Code and Copilot CLI can pick it up
+on their own, with no mention needed in your prompt:
+
+```bash
+python -m kernelfoundry.mcp_server install_agent --client claude    # or --client copilot
+```
+
+This writes it to wherever that client scans for a custom agent (`~/.claude/agents/` or
+`~/.copilot/agents/` by default; add `--scope project` to install into the current project
+instead). The file carries the frontmatter both hosts need to route to it automatically — start a
+new chat session afterward for it to take effect.
+
+For any other client, add a line pointing at `agent-workflow.md` to whichever instructions file it
+already reads — `CLAUDE.md` for Claude Code, `AGENTS.md` for Codex CLI, a rule under
+`.cursor/rules/` for Cursor — so you don't have to repeat it every session.
 :::
 
 ## Start a session

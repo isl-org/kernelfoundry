@@ -4,7 +4,7 @@ Each task's `config.yaml` sets how KernelFoundry runs it. This page covers the p
 knowing, grouped by section.
 
 The **Required** and **Common top-level** parameters below are all most users need. The later
-sections (evaluation, inference, prompt, evolutionary database) are reference for tuning.
+sections (inference, prompt, evolutionary database) are reference for tuning.
 
 KernelFoundry uses [Hydra](https://hydra.cc/) for hierarchical configuration, so parameters are
 grouped into topical sections. Anything you set in a task's `config.yaml` is merged over the
@@ -40,8 +40,8 @@ python -m kernelfoundry.algorithm run task=tasks/example_custom task_origin=cust
 
 | Parameter | Type | Description | Default |
 | --- | --- | --- | --- |
-| `language` | string | Kernel language, which determines the compiler and profiler used. One of `SYCL`, `CUDA`, `OCL`, `triton`. Inferred from the detected GPU when unset: CUDA on NVIDIA, SYCL on Intel. | inferred |
-| `gpu_arch` | string | Architecture to benchmark on. Intel: `lnl`, `ptl`, `bmg`, `dg2`. NVIDIA: `Ampere` is the only one with a hardware profile and recorded baselines; `Maxwell`, `Pascal`, `Volta`, `Turing`, `Hopper`, `Ada` and `native` select the CUDA profiler and run, but generate without hardware-specific prompt context and without a KernelBench speedup figure. Coupled to `language`: a CUDA arch requires `language: CUDA`. Accepts a comma-separated list to benchmark on several. Inferred when unset: `Ampere` on NVIDIA, `dg2` on Intel. | inferred |
+| `language` | string | Kernel language, which determines the compiler and profiler used. One of `SYCL`, `CUDA`, `OCL`, `triton`, `CM` (Intel explicit-SIMD "C for Metal"), or `vulkan`. Inferred from the detected GPU when unset: CUDA on NVIDIA, SYCL on Intel. | inferred |
+| `gpu_arch` | string | Architecture to benchmark on. Intel: `lnl` (Lunar Lake), `ptl` (Panther Lake), `mtl` (Meteor Lake), `arl` (Arrow Lake), `rpl` (Raptor Lake), `dg2` (Flex 170 / Arc A770), `bmg` (Battlemage, alias for `b580`), `b580`, `b70`, `b60`, `pvc` (Ponte Vecchio). NVIDIA (requires `language: CUDA`): `Ampere`/`ampere`, `A100`, `A6000`, `Maxwell`, `Pascal`, `Volta`, `Turing`, `Hopper`, `Ada`, `L40S`, `L4`, `native`. Every value gets hardware-specific prompt context except `native`, which has no recorded specs; a KernelBench speedup figure is only recorded for `Ampere`, `ptl`, `bmg`/`b580` and `dg2`, not the rest. Accepts a comma-separated list to benchmark on several. Inferred when unset: `Ampere` on NVIDIA, `dg2` on Intel. | inferred |
 | `max_iters` | int | Maximum optimization iterations. `0` evaluates without generating anything. | `3` |
 | `branches_per_iteration` | int | Kernels generated per iteration (LLM calls). **Above 1 this enables evolutionary search**: a parent kernel is sampled and multiple branches explored. At 1 the algorithm simply improves the previous kernel. | `2` |
 | `stop_once_correct` | bool | Stop as soon as a correct kernel is found. Useful for pure translation tasks. | `false` |
@@ -53,9 +53,42 @@ python -m kernelfoundry.algorithm run task=tasks/example_custom task_origin=cust
 | `use_feedback_llm` | bool | Use a second LLM to summarize evaluation logs such as compile errors before feeding them back. | `false` |
 | `start_from_best` | bool | Start from the best kernel recorded for this `task_name` rather than cold. Useful to continue a promising run. | `false` |
 | `validate` | bool | Evaluate the kernel currently in the evolve block. Combine with `max_iters: 0` to benchmark without generating. | `false` |
+| `profiler_kernel` | string or null | Profiler to run on the generated kernel. `default` picks the language's recommended profiler (SYCL/CM → unitrace, OCL → vtune, CUDA → ncu); `null` disables profiling for the kernel entirely; or name one explicitly (e.g. `unitrace`, `vtune`, `ncu`) to force it regardless of language default. `vulkan` has no profiler implemented yet, so `default` yields no profiling for it. | `default` |
+| `profiler_reference` | string or null | Same options as `profiler_kernel`, applied to the reference implementation instead. | `null` |
 
 There is no `evolve_mode` parameter; evolutionary search is derived from
 `branches_per_iteration > 1`.
+
+(supported-gpu-targets)=
+### Supported GPU targets
+
+Set `gpu_arch` to a value below, using the capitalization shown. Aliases in the same row
+select the same GPU target. `bmg` is a backward-compatible alias for `b580`.
+
+| Intel target | GPU |
+| --- | --- |
+| `dg2` | Intel Flex 170 / Arc A770 |
+| `b580`, `bmg` | Intel Arc B580 (Battlemage) |
+| `b70` | Intel Arc Pro B70 |
+| `b60` | Intel Arc Pro B60 |
+| `lnl` | Intel Lunar Lake |
+| `ptl` | Intel Panther Lake |
+| `mtl` | Intel Meteor Lake |
+| `arl` | Intel Arrow Lake |
+| `rpl` | Intel Raptor Lake |
+| `pvc` | Intel Data Center GPU Max (Ponte Vecchio) |
+
+| NVIDIA target | GPU |
+| --- | --- |
+| `Ampere`, `ampere`, `A6000` | NVIDIA RTX A6000 |
+| `A100` | NVIDIA A100 |
+| `Maxwell` | NVIDIA Tesla M40 |
+| `Pascal` | NVIDIA Tesla P100 |
+| `Volta` | NVIDIA Tesla V100 |
+| `Turing` | NVIDIA T4 |
+| `Hopper` | NVIDIA H100 |
+| `Ada`, `L40S` | NVIDIA L40S |
+| `L4` | NVIDIA L4 |
 
 ## Hierarchical structure
 
@@ -66,20 +99,12 @@ prompt:
   reference_language: SYCL
 
 inference:
-  servers:
-    - _target_: kernelfoundry.algorithm.inference_server.InferenceServer
-      server_type: openai
-      model_name: gpt-5
-      temperature: 0.3
-
-eval_config:
-  warmup_min_time: 0.1
-  profile_original_model: false
+  provider: openai
+  model: gpt-5
+  temperature: 0.3
 ```
 
-That config tells the prompt the reference is SYCL, generates with one OpenAI model at
-temperature 0.3, and benchmarks with a 0.1 s warmup. Lists are written with dashes, and `inference`
-takes several servers to form an ensemble.
+That config tells the prompt the reference is SYCL and generates with one OpenAI model at temperature 0.3.
 
 ## Task hyperparameters (`hyperparameters`)
 
@@ -116,56 +141,56 @@ instead, which reads it straight from `sys.argv`.
 Both default to `null`, and both are recorded with the run so a result can be traced back to
 the values that produced it.
 
-## Evaluation (`eval_config`)
-
-Controls how a candidate is measured.
-
-| Parameter | Type | Description | Default |
-| --- | --- | --- | --- |
-| `num_perf_trials` | int | Timed trials used for the runtime measurement. | `100` |
-| `warmup_min_iters` | int | Minimum warmup iterations before timing. | `10` |
-| `warmup_min_time` | float | Minimum warmup duration, seconds. | `0.1` |
-| `inner_loop_min_time` | float | A kernel pass must take at least this long, so synchronization overhead does not dominate. | `0.01` |
-| `profile_original_model` | bool | Also profile the reference, not just the candidate. | `false` |
-| `profile_num_iterations` | int | Iterations used when profiling. | `5` |
-| `verbose` | bool | Verbose evaluation logging. | `false` |
-
-Profiler selection is top-level. Leaving these null picks the language default: SYCL uses
-unitrace, OCL uses VTune, CUDA uses ncu:
-
-```yaml
-profiler_kernel: vtune
-profiler_reference: vtune
-```
-
 ## LLM inference (`inference`)
 
-Configures the model used for generation. The open-source `InferenceServer` supports
-`server_type: openai` and `server_type: anthropic`, reading `OPENAI_API_KEY` or
+Configures the model(s) used for generation. `inference` is always a small ensemble under the
+hood (`model_1`, `model_2`, `model_3`, weighted by the matching entries of `weights`), but
+`model_2`/`model_3` are disabled (`provider: null`) by default, so most configs only ever
+touch the top-level `provider`/`model` shortcut, which is just `model_1`:
+
+```yaml
+inference:
+  provider: openai
+  model: gpt-5
+```
+
+The open-source `provider: openai` and `provider: anthropic` read `OPENAI_API_KEY` or
 `ANTHROPIC_API_KEY` from the environment respectively. Any OpenAI-compatible endpoint can be
 targeted by setting `base_url`.
 
-Each server accepts:
-
 | Parameter | Type | Description | Default |
 | --- | --- | --- | --- |
-| `server_type` | string | `openai` or `anthropic`. | — |
-| `model_name` | string | Model identifier. `default` picks the first known model for that provider. | `default` |
-| `max_tokens` | int | Maximum tokens to generate. | `5000` |
+| `provider` | string | `openai`, `anthropic`, or `claude_cli` (generates via a Claude subscription instead of an API key — see [LLM setup](llm-setup.md); internal deployments may register more). | — |
+| `model` | string | Model identifier. `default` picks the first known model for that provider. | `default` |
+| `max_tokens` | int | Maximum tokens to generate. | `16000` |
 | `temperature` | float | Sampling temperature; `0.0` is deterministic. | `0.0` |
 | `num_completions` | int | Completions per call. Requires `temperature > 0` above 1. | `1` |
-| `timeout` | int | Request timeout, seconds. Raise if you hit inference timeouts. | `400` |
 | `verbose` | bool | Log inference details. | `false` |
 
-Ready-made variants live in
-[`kernelfoundry/configs/inference/`](https://github.com/isl-org/kernelfoundry/tree/main/kernelfoundry/configs/inference):
-`server.yaml` for a single model, `ensemble.yaml` for several.
+For an ensemble, enable `model_2` and/or `model_3` with the same fields, and give `weights` a
+matching entry per slot (selection probability, normalized automatically).
 
-Any model your provider offers works; `model_name` is passed straight through, so there is no
-list to keep in step with provider catalogues. The `DEFAULT_MODELS` table at the top of
+```yaml
+inference:
+  model_1:
+    provider: openai
+    model: gpt-5.4
+  model_2:
+    provider: anthropic
+    model: claude-sonnet-5
+  weights: [0.3, 0.7]
+```
+
+See
+[`kernelfoundry/configs/inference/server.yaml`](https://github.com/isl-org/kernelfoundry/blob/main/kernelfoundry/configs/inference/server.yaml)
+for the full schema. Any model your provider offers works; `model` is passed straight through,
+so there is no list to keep in step with provider catalogues. The `DEFAULT_MODELS` table at the
+top of
 [`inference_server.py`](https://github.com/isl-org/kernelfoundry/blob/main/kernelfoundry/algorithm/inference_server.py)
-is only the fallback consulted when `model_name` is left as `default`; it is not a validation
-list.
+is only the fallback consulted when `model` is left as `default`; it is not a validation list.
+
+Power users can still bypass all of this with an explicit `_target_` (a raw
+`hydra.utils.instantiate`-style config), which is used as-is.
 
 ## Prompt (`prompt`)
 
@@ -208,3 +233,32 @@ Defaults for every field are in
 
 For the strategies these parameters serve, see
 [Optimization strategies](optimization-strategies.md).
+
+## Skills (`skills`)
+
+A skill is a directory holding a `SKILL.md` file — YAML frontmatter plus a Markdown body,
+following the [Agent Skills specification](https://agentskills.io/specification) — and optionally
+bundled `scripts/`, `references/` and `assets/`. Skills are filtered by the
+`metadata.programming-languages` field against the run's `language`, so a SYCL run sees only SYCL
+skills.
+
+```yaml
+skills:
+  directories:
+    - ./skills
+```
+
+| Parameter | Type | Description | Default |
+| --- | --- | --- | --- |
+| `directories` | list | Directories scanned recursively for `SKILL.md` files. Relative paths resolve against the working directory. | `["./skills"]` |
+
+Both workflows load the `skills: default` group via `kernelfoundry/configs/base.yaml`, so
+`./skills` is scanned by default whether you run the classic search or the agentic one. Override
+`skills.directories` in a task's `config.yaml` to point elsewhere, or set it to `[]` to load no
+skills at all.
+
+The two workflows use a skill differently, because one has tools and the other does not. The
+agentic workflow hands the agent the skill directory and lets it open what it needs, which is the
+progressive disclosure the specification describes. The classic search has no tools, so its prompt
+inlines each `SKILL.md` body and leaves the bundled resources on disk; a skill that would push the
+prompt past the budget is left out whole rather than truncated, and says so in the log.

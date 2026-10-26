@@ -148,7 +148,7 @@ permission to read GPU performance counters, and how you grant it differs by pla
 - **Windows**: run from an elevated prompt, or allow counter access for all users in the NVIDIA
   Control Panel under *Desktop > Developer Settings*.
 
-Profiling is on by default. To **run without a profiler**, set `eval_config.profile_custom_model: false` (for the reference, profiling is disabled by default - `profile_original_model: false`).
+Profiling is on by default. To **run without a profiler**, set `profiler_kernel: null` (for the reference, profiling is disabled by default - `profiler_reference: null`).
 
 </details>
   
@@ -173,14 +173,23 @@ pip install 'kernelfoundry[mcp,algo]'
 Then, use our helper script to create the MCP server config:
 
 ```
-python -m kernelfoundry.mcp_server create_config   # prompts for a few answers, writes an MCP client config
+python -m kernelfoundry.mcp_server create_config                    # prompts, prints an MCP client config
+python -m kernelfoundry.mcp_server create_config --client codex     # in the format that client expects
 ```
 
-This script will output the MCP config file, which you can copy-paste when adding the MCP server to your coding agent (GitHub Copilot, Claude Code, Cursor). Note: `create_config` is interactive: it asks a few questions and writes the client config from the answers. It has no non-interactive mode, so it cannot be scripted or run by an agent as-is.
+Copy the output into your agent's MCP config. Pass `--client` to get the right format for
+`claude`, `codex`, `cursor` or `vscode` — they are not interchangeable, and VS Code in particular
+keys its block `servers` rather than `mcpServers`, so the wrong one registers nothing and reports
+no error. Without `--client` you get the common `mcpServers` shape that Claude Code, Cursor and
+Cline read.
+
+Add `--non-interactive` (with `--server-url`, `--user` and `--token` as needed) to skip the
+prompts, so an agent or a setup script can run it. Per-client setup is in the
+[MCP server reference](https://github.com/isl-org/kernelfoundry/blob/main/kernelfoundry/mcp_server/README.md#register-the-server-with-your-agent).
 
 ### Using KernelFoundry via the MCP server
 
-Point the agent to [`agent-workflow.md`](https://github.com/isl-org/kernelfoundry/blob/main/kernelfoundry/mcp_server/agent-workflow.md) to instruct it how to use KernelFoundry.
+Point the agent to [`agent-workflow.md`](https://github.com/isl-org/kernelfoundry/blob/main/kernelfoundry/mcp_server/agent-workflow.md) to instruct it how to use KernelFoundry. For Claude Code or Copilot CLI, `python -m kernelfoundry.mcp_server install_agent --client claude` (or `--client copilot`) installs it as a custom agent those clients discover on their own — see the [MCP server reference](https://github.com/isl-org/kernelfoundry/blob/main/kernelfoundry/mcp_server/README.md#register-the-server-with-your-agent).
 
 A typical prompt is the following (fill in dependent on your use case):
 ```
@@ -198,11 +207,15 @@ The agent creates the task package (i.e. code for testing the kernel in isolatio
 <details>
 <summary><h4 style="display:inline">Details on MCP server setup and how it works (click to expand) </h4></summary>
 
-The KernelFoundry [MCP](https://modelcontextprotocol.io) server exposes two tools:
+The KernelFoundry [MCP](https://modelcontextprotocol.io) server exposes these tools:
 * **`build_and_test(folder_path)`**, which builds and benchmarks the task package in that
 folder and reports whether it passed, the evaluation log, the measured runtimes and the speedup
 over your reference.
 * **`submit_task(folder_path)`**, which starts the full evolutionary algorithm that iteratively optimizes the kernels. NOTE: this option requires an LLM-API to generate the kernels, see [Configuring the LLM API](#configuring-the-llm-api).
+* **`search_kernels_in_db(...)`**, which searches the shared database of previously generated kernels
+(e.g. by task name or a code snippet) to see how similar problems were solved before.
+* **`get_kernel_from_db(kernel_id)`**, which fetches the full source and evaluation log for a kernel
+found via `search_kernels_in_db`.
 
 The agent will
 1) follow the instructions to create the task package
@@ -262,6 +275,12 @@ python -m pip install torch==2.9 torchvision==0.24 torchaudio==2.9.0 --index-url
 python -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cu130
 ```
 
+#### Optional libs
+We provide additional dependencies for special use cases in `libs/`. If you want to optimize a C for metal (CM) kernel, install the clops lib:
+```
+pip install -e libs
+```
+
 ### Configuring the LLM API
 
 The algorithm runs an evolutionary search autonomously, rather than step by step with an agent. 
@@ -310,8 +329,10 @@ See [Config Parameters](https://isl-org.github.io/kernelfoundry/docs/guide/confi
 | | Intel GPU | NVIDIA GPU |
 |---|---|---|
 | Languages | SYCL, OpenCL | CUDA |
-| `gpu_arch` values | `lnl` (Lunar Lake), `ptl` (Panther Lake), `bmg` (Battlemage), `dg2` (Flex 170 / Arc A770) | `Ampere` is the only one with a hardware profile and baselines. `Maxwell`, `Pascal`, `Volta`, `Turing`, `Hopper`, `Ada` and `native` run, but without hardware-specific prompt context or a KernelBench speedup figure |
 | Default profiler | unitrace for SYCL, VTune for OpenCL | ncu (ships with the CUDA toolkit) |
+
+See [Supported GPU targets](https://isl-org.github.io/kernelfoundry/docs/guide/config-parameters.html#supported-gpu-targets)
+for `gpu_arch` values and aliases.
 
 `gpu_arch` and `language` must agree: a CUDA architecture requires `language: CUDA`. Both accept
 a comma-separated list to benchmark on several targets.
@@ -326,8 +347,9 @@ Generated kernels, jobs and metrics are stored in a SQLite database, by default
 `runs/kernels.sqlite3` relative to where you started the run. Change it with
 `paths.kernels_db_path`.
 
-> When the MCP server runs in local execution mode under VS Code, the database is written
-> relative to your home directory, because that is where the editor launches the server from.
+> When the MCP server runs in local execution mode, the database is written relative to the
+> working directory your MCP client launched it from — usually your home directory, not the task
+> folder.
 
 Browse results in the web UI:
 

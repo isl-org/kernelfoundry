@@ -73,6 +73,18 @@ def extract_code_flexible(
         return code_from_tags
 
 
+def _is_plausible_code(block: str) -> bool:
+    """Whether a heuristically extracted block is code rather than prose.
+
+    The scorer below counts keywords, and English sentences contain plenty of them - "for", "if",
+    "return", "auto" - so a reply along the lines of "The kernel is already optimal." scores well
+    and gets spliced into the source, where it fails as `error: unknown type name 'The'`.
+    Requiring one structural token separates the two without rejecting anything a model would
+    really emit.
+    """
+    return bool(re.search(r"[;{}]|^\s*#\s*(include|define|pragma|if|endif)", block, re.M))
+
+
 def extract_cpp_code_heuristic(output_string: str) -> str | None:
     """Extract C++ code from model output"""
     # fmt: off
@@ -196,7 +208,8 @@ def extract_cpp_code_heuristic(output_string: str) -> str | None:
     #     print(f"{line_score[i]:2} {line}")
 
     if max_length > 0:
-        return "\n".join(trimmed.splitlines()[max_start : max_start + max_length])
+        block = "\n".join(trimmed.splitlines()[max_start : max_start + max_length])
+        return block if _is_plausible_code(block) else None
 
     return None
 
@@ -239,6 +252,67 @@ def extract_code_from_tags(
         return code
 
     return None
+
+
+def extract_multi_block_code(
+    output_string: str,
+    labels: list[str],
+    tag: str,
+    use_cpp_fallback: bool = False,
+) -> dict[str, str]:
+    """Extracts one code section per label from a multi-block-formatted LLM response.
+
+    Expects the response to contain sections headed by lines like ``### Block: <label> ###``,
+    each followed by a fenced (or tagged) code block, mirroring the header convention produced
+    by ``blocks_to_str`` for displaying multi-block code in prompts.
+
+    Args:
+        output_string: Raw LLM response.
+        labels: The block labels to look for (see ``block_labels``); labels not present in the
+            response are simply omitted from the result so callers can fall back appropriately.
+        tag: Language tag used for tagged/fenced code extraction (e.g. "sycl", "cuda").
+        use_cpp_fallback: Whether to fall back to the C++ code heuristic when a section has no
+            fenced/tagged code block.
+
+    Returns:
+        dict[str, str]: Mapping of found labels to their extracted code.
+    """
+    header_re = re.compile(r"^###\s*Block:\s*(.+?)\s*###\s*$", re.MULTILINE)
+    matches = list(header_re.finditer(output_string))
+
+    sections = []
+    for i, match in enumerate(matches):
+        start = match.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(output_string)
+        sections.append((match.group(1).strip(), output_string[start:end]))
+
+    def extract_section_code(section: str) -> str | None:
+        code = extract_code_from_tags(section, tag=tag)
+        if code is None and use_cpp_fallback:
+            code = extract_cpp_code_heuristic(section)
+        return code
+
+    result = {}
+    for label, section in sections:
+        if label not in labels:
+            continue
+        code = extract_section_code(section)
+        if code:
+            result[label] = code
+
+    # If some expected labels weren't matched by exact header text, but the response contains
+    # exactly as many sections as expected blocks, assume the model echoed mismatched/ambiguous
+    # labels (e.g. it copied the same header for two same-file blocks) and fall back to matching
+    # sections to labels positionally, in order.
+    missing = [label for label in labels if label not in result]
+    if missing and len(sections) == len(labels):
+        for label, (_, section) in zip(labels, sections):
+            if label in result:
+                continue
+            code = extract_section_code(section)
+            if code:
+                result[label] = code
+    return result
 
 
 def extract_last_code(output_string: str, code_language_types: list[str]) -> str | None:

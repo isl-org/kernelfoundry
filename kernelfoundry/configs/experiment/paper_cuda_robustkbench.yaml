@@ -1,11 +1,10 @@
 # @package _global_
 defaults:
   - override /paths: default
-  - override /inference: ensemble
   - override /database: evolve_db_optimization_aware
   - override /prompt: meta_prompting
   - override /task_set: default
-  
+
 job_name: paper_cuda_robustkbench
 
 language: CUDA
@@ -39,8 +38,24 @@ task_set:
   use_representative: True
 
 # use same models as robust-kbench paper (o3, o4-mini, GPT-4.1)
-# inference: 
-# TODO: use OpenAI API or Anthropic. 
+inference:
+  model_1:
+    provider: openai
+    model: o3
+    temperature: 0.3
+    max_tokens: 6500
+  model_2:
+    provider: openai
+    model: o4-mini
+    temperature: 0.3
+    max_tokens: 6500
+    weight: 1
+  model_3:
+    provider: openai
+    model: gpt-4.1
+    temperature: 0.3
+    max_tokens: 6500
+    weight: 1
 
 # Enable templated kernels
 prompt:

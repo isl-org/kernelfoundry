@@ -1,6 +1,7 @@
 """System information helpers."""
 
 from pathlib import Path
+from xml.etree import ElementTree
 import subprocess
 import socket
 import re
@@ -378,6 +379,26 @@ def get_nvidia_gpu_name() -> str:
     return ""
 
 
+def get_nvidia_gpu_architecture() -> str:
+    """Get the first NVIDIA GPU's product architecture (e.g., "Ampere") if present.
+
+    Not exposed via --query-gpu, so this reads it from the -q -x XML report instead.
+
+    Returns:
+        str: GPU architecture name, or an empty string if not found.
+    """
+    try:
+        result = subprocess.run(["nvidia-smi", "-q", "-x"], capture_output=True, text=True)
+        if result.returncode == 0:
+            root = ElementTree.fromstring(result.stdout)
+            arch = root.findtext("gpu/product_architecture")
+            if arch:
+                return arch.strip()
+    except Exception:
+        pass
+    return ""
+
+
 def get_worker_info():
     """Get system info for the current worker.
 
@@ -402,6 +423,7 @@ def get_worker_info():
             "device_id": device_id,
             "gpu_name": gpu_name,
             "nvidia_compute_capabilities": " ".join(get_nvidia_compute_capabilities()),
+            "nvidia_gpu_architecture": get_nvidia_gpu_architecture(),
             "git_commit_hash": get_git_commit_hash(),
             "torch_version": get_torch_version(),
             "hostname": socket.gethostname(),

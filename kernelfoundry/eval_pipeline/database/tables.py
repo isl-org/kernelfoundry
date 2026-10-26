@@ -7,7 +7,7 @@ from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import mapped_column
 from sqlalchemy.types import JSON, DateTime, Text
-from sqlalchemy import String
+from sqlalchemy import String, UniqueConstraint
 
 
 class Base(DeclarativeBase):
@@ -48,6 +48,10 @@ class Kernel(Base):
         comment="Measured execution time in seconds (negative or NaN for failures)"
     )
     runtime_stats: Mapped[dict[str, Any] | None] = mapped_column(comment="This is a json object")
+    roofline_pct_min: Mapped[float | None] = mapped_column(
+        comment="Worst-case (minimum) roofline percentage of peak compute/memory-bandwidth across all "
+        "benchmarks and GPU archs, derived from runtime_stats[..]['roofline']['roofline_pct']"
+    )
     improve_over_native: Mapped[float | None] = mapped_column(
         comment="Relative improvement over native baseline (e.g., speedup factor or delta)"
     )
@@ -135,6 +139,54 @@ class BaselineTime(Base):
             f"BaselineTime(id={self.id}, level={self.level}, task_name={self.task_name}, mean={self.mean}, "
             f"std={self.std}, min={self.min}, max={self.max}, num_trials={self.num_trials}, "
             f"hardware={self.hardware}, device={self.device})"
+        )
+
+
+class ReferencePerformance(Base):
+    """Cached reference benchmark result, keyed by a content hash of the task's reference-relevant
+    files (everything except config.yaml/.yml and any file containing an EVOLVE block) plus the gpu_arch
+    it was benchmarked on. Lets repeated build_and_test/submit_task calls reuse a reference result
+    instead of rebuilding and rebenchmarking it every time.
+
+    A job's gpu_arch may list multiple architectures (e.g. "lnl,ptl"); each individual architecture is
+    stored as its own row here rather than the comma-joined string, so a cached single-arch result can
+    be reused by a job that only needs that one arch, and so multi-arch requests are order-independent.
+    """
+
+    __tablename__ = "reference_performance"
+    __table_args__ = (UniqueConstraint("task_hash", "gpu_arch", name="uq_reference_performance_hash_arch"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, comment="Creation date of this entry"
+    )
+    task_name: Mapped[str | None] = mapped_column(
+        comment="Human-readable task name, for display/debugging only -- not part of the lookup key"
+    )
+    task_hash: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        comment="SHA256 hash of task files excluding config.yaml/.yml and files containing an EVOLVE block",
+    )
+    gpu_arch: Mapped[str] = mapped_column(
+        nullable=False, comment="A single GPU architecture the reference was benchmarked on (never comma-joined)"
+    )
+    build_result_reference: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON, comment="Encoded BuildResult for the reference (artifacts, compiler output)"
+    )
+    test_result_reference: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON, comment="Encoded TestResult for the reference (correctness + raw per-trial runtimes + profiler traces)"
+    )
+    runtime_stats: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON, comment="Human-readable summary of per-benchmark runtime stats (mean/std/min/max)"
+    )
+    job_id: Mapped[int | None] = mapped_column(comment="Job that produced this cached reference result")
+    db_user: Mapped[str] = mapped_column(String(128), default=_default_db_user, nullable=False, comment="Database user")
+
+    def __str__(self):
+        return (
+            f"ReferencePerformance(id={self.id}, task_name={self.task_name}, task_hash={self.task_hash[:12]}…, "
+            f"gpu_arch={self.gpu_arch}, job_id={self.job_id})"
         )
 
 

@@ -281,6 +281,11 @@ def measure_runtime(
     inner_loop_iters = max([1, int(inner_loop_min_time / test_trials_min)])
 
     num_warmup = max([warmup_min_iters, warmup_time_iters])
+    if ext_profiler and reduce_iterations_for_external_profiler:
+        # Limit warmup for external profilers too, same rationale as inner_loop_iters/
+        # num_perf_trials below: keep enough iterations for the GPU to reach steady clocks
+        # without unnecessarily lengthening the profiled run.
+        num_warmup = min(num_warmup, 40)
 
     # Warmup trials (not considered for runtime stats)
     tic = time.perf_counter()

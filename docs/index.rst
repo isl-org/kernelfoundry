@@ -74,6 +74,8 @@ Start here
      - Are writing a task package by hand. Continue to :doc:`guide/writing-tests`.
    * - :doc:`guide/config-parameters`
      - Are tuning a run. See also :doc:`guide/optimization-strategies`.
+   * - :doc:`guide/llm-setup`
+     - Are setting up an API key or a Claude subscription for generation.
    * - :doc:`guide/understanding-results`
      - Have a finished run and want to know why it went that way.
    * - :doc:`api/public`
@@ -93,6 +95,7 @@ single source of truth.
    guide/config-parameters
    guide/understanding-results
    guide/optimization-strategies
+   guide/llm-setup
 
 .. toctree::
    :maxdepth: 2

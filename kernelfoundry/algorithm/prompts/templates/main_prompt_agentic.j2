@@ -18,6 +18,7 @@ Edit only the regions that are annotated with [EVOLVE_START] and [EVOLVE_END]. D
 After you are done evaluate your solution by calling the build_and_test tool.
 {% if mcp_prompt_list %}
 ## MCP server guidance:
+- If installed in kernelfoundry-mcp, you can use the `search_kernels_in_db` tool to find related performant kernels in the database (and get the code of selected kernels with the `get_kernel_from_db` tool).
 {% for mcp_prompt in mcp_prompt_list %}
 - {{ mcp_prompt }}
 {% endfor %}

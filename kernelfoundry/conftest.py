@@ -4,6 +4,7 @@ Fixtures in this file are available in the `task.py` file and provide utilities
 to measure performance, switch between reference and kernel code, and use template arguments.
 """
 
+import base64
 import os
 import sys
 from typing import Callable, Union
@@ -45,6 +46,12 @@ def pytest_addoption(parser):
         help="Path to write the runtime measurements as JSON at the end of test run",
     )
     parser.addoption(
+        "--correctness-out",
+        action="store",
+        default=None,
+        help="Path to write the per-test correctness outcomes as JSON at the end of test run",
+    )
+    parser.addoption(
         "--itt",
         action="store_true",
         default=False,
@@ -81,7 +88,8 @@ def get_runtime_params_from_argv() -> dict:
 
     for arg in sys.argv:
         if arg.startswith("--runtime_params="):
-            return json.loads(arg.split("=", 1)[1])
+            encoded = arg.split("=", 1)[1]
+            return json.loads(base64.b64decode(encoded).decode())
     return {}
 
 
@@ -115,6 +123,44 @@ def profile_store(request) -> dict:
     yield store  # Tests run; they can modify store
     # Teardown: write file if option provided
     out_path = request.config.getoption("--performance-out")
+    if out_path:
+        p = Path(out_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("w", encoding="utf-8") as f:
+            json.dump(store, f)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def correctness_store(request) -> dict:
+    """This store is used to collect per-test correctness results in a dictionary.
+
+    The keys of the dictionary are the test node ids, and the values are whether the test
+    passed. Unlike profile_store, the tests cannot fill this as they run: a failing test
+    raises, so it never reaches a line that would record its own verdict. The outcomes
+    pytest has already accumulated are read back at teardown instead, which is also why
+    this is autouse rather than requested by a test.
+
+    Returns:
+        dict: Store keyed by test node id, populated once the tests have run.
+    """
+    # Mutable container, filled at teardown rather than by the tests
+    store = {}
+    yield store  # Tests run; pytest records each outcome
+    reporter = request.config.pluginmanager.getplugin("terminalreporter")
+    if reporter is not None:
+        store.update(
+            {
+                report.nodeid: report.passed
+                for reports in reporter.stats.values()
+                for report in reports
+                # A test skipped in its own body reports as not passed, so recording it
+                # would claim the kernel is wrong on a case that was never checked. Tests
+                # skipped by a marker never reach the call phase and are already absent.
+                if getattr(report, "when", None) == "call" and not report.skipped
+            }
+        )
+    # Teardown: write file if option provided
+    out_path = request.config.getoption("--correctness-out")
     if out_path:
         p = Path(out_path)
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -227,6 +273,24 @@ def measure_runtime(request, profile_store) -> Callable:
         output=profile_store[request.node.nodeid],
     )
     return fn
+
+
+@pytest.fixture(scope="session")
+def ocl_queue():
+    """Fixture to create an OpenCL command queue for GPU execution."""
+    import pyopencl as cl
+
+    # Find the first GPU device across all platforms
+    device = None
+    for platform in cl.get_platforms():
+        devs = platform.get_devices(cl.device_type.GPU)
+        if devs:
+            device = devs[0]
+            break
+    assert device is not None, "No OpenCL GPU device found"
+    ctx = cl.Context([device])
+    queue = cl.CommandQueue(ctx, properties=cl.command_queue_properties.PROFILING_ENABLE)
+    return queue
 
 
 @pytest.fixture(scope="session")

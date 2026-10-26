@@ -98,13 +98,27 @@ class BuildAndTestHandler:
         try:
             source_task, _ = Task.create(Path(folder_path))
             evolve_block = source_task.blocks.get("EVOLVE")
+            if not evolve_block:
+                raise ValueError("No [EVOLVE_START]...[EVOLVE_END] block found. Both tags appear to be missing.")
             new_task = task.with_blocks({"EVOLVE": evolve_block}, keep_test_result_reference=True)
+
+            # check if the agent modified anything outside the evolve block
+            modified_outside_evolve = source_task.reference_hash() != task.reference_hash()
+            if modified_outside_evolve:
+                logging.warning(
+                    f"iteration={iteration} branch={branch}: "
+                    "agent modified file(s) outside the EVOLVE block(s); those changes are "
+                    "discarded, only the EVOLVE block content is used for evaluation."
+                )
         except Exception as e:
             return EvaluateFunctionResult(
                 tool_response={
                     "success": False,
                     "job_id": job_id,
-                    "eval_log": "Failed to extract EVOLVE block. Make sure that the code is properly tagged with [EVOLVE_START] and [EVOLVE_END].",
+                    "eval_log": (
+                        "Failed to extract EVOLVE block. Make sure that the code is properly tagged with "
+                        f"[EVOLVE_START] and [EVOLVE_END], and that there are no stray tags. Original error: {e}"
+                    ),
                     "runtime_stats": {},
                     "speedup": -1.0,
                 },
@@ -116,6 +130,13 @@ class BuildAndTestHandler:
             problem_logger = ProblemLogger(level=0, problem_id=job_id, logdir=logdir, trial=0)
             evaluator = Evaluator(config=new_task.config, problem_logger=problem_logger, version=0)
             eval_result, _ = evaluator.run(new_task)
+
+        if modified_outside_evolve:
+            eval_result.eval_log = (
+                "NOTE: file(s) outside the [EVOLVE_START]/[EVOLVE_END] block(s) were modified, but "
+                "only the EVOLVE block content is used for evaluation -- those other changes were "
+                "discarded and had no effect on this result.\n\n" + eval_result.eval_log
+            )
 
         kernel_uuid = str(uuid.uuid4())
 

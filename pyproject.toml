@@ -48,6 +48,7 @@ algo = [
     "pybind11",
     "openvino", # for baseline times (torch.compile)
     "pyopencl",
+    "vulkan",
     "authlib",
     "paramiko",
     "ittapi",
@@ -56,7 +57,7 @@ algo = [
     "celery[msgpack]",
     "python-multipart",
     "requests",
-    "sqlalchemy",
+    "sqlalchemy<2.1.0",
     "psycopg2-binary",
     "cmake",
     "omegaconf"

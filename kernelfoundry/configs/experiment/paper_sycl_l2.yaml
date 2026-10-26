@@ -1,13 +1,28 @@
 # @package _global_
 defaults:
   - override /paths: default
-  - override /inference: ensemble
   - override /database: evolve_db_optimization_aware
   - override /prompt: meta_prompting
   - override /task_set: default
-  
 
 job_name: paper_sycl_wotemplated_l2
+
+inference:
+  _target_: kernelfoundry.algorithm.inference_server.LLMEnsemble
+  servers:
+    - _target_: kernelfoundry.algorithm.inference_server.InferenceServer
+      server_type: openai
+      model_name: gpt-4o
+      temperature: 0.3
+      num_completions: 1
+      max_tokens: 6500
+    - _target_: kernelfoundry.algorithm.inference_server.InferenceServer
+      server_type: openai
+      model_name: gpt-5.2
+      temperature: 0.3
+      num_completions: 1
+      max_tokens: 6500
+  weights: uniform
 
 # main parameters
 language: SYCL

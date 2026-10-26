@@ -12,6 +12,7 @@ import getpass
 import hydra
 import numpy as np
 import logging
+from omegaconf import OmegaConf
 
 # API clients
 from openai import OpenAI
@@ -45,6 +46,46 @@ DEFAULT_MODELS = {
         "claude-haiku-4-5",
     ],
 }
+
+# Maps a short provider name (as used in config, e.g. `inference.provider`) to the
+# dotted class path Hydra should instantiate for it.
+_PROVIDER_TARGETS = {
+    "openai": f"{__name__}.InferenceServer",
+    "anthropic": f"{__name__}.InferenceServer",
+    "claude_cli": "kernelfoundry.algorithm.claude_cli_server.ClaudeCLIServer",
+}
+
+
+def register_inference_provider(provider: str, target: str) -> None:
+    """Register (or override) the Hydra target class path for an inference provider name."""
+    _PROVIDER_TARGETS[provider] = target
+
+
+def _resolve_inference_target(provider: str) -> str:
+    if provider is None:
+        # An unused ensemble slot (provider: null, weight: 0): still gets instantiated
+        # by Hydra regardless of weight, so it needs a no-op stand-in rather than an error.
+        return f"{__name__}.DisabledServer"
+    if provider not in _PROVIDER_TARGETS:
+        raise ValueError(f"Unknown inference provider '{provider}'. Available providers: {sorted(_PROVIDER_TARGETS)}")
+    return _PROVIDER_TARGETS[provider]
+
+
+OmegaConf.register_new_resolver("inference_target", _resolve_inference_target, replace=True)
+
+
+class DisabledServer:
+    """No-op stand-in for an unused ensemble slot (provider: null). Never actually
+    queried as long as its weight is 0, since LLMEnsemble.__call__ samples by weight."""
+
+    model = None
+    server_type = None
+
+    def __init__(self, **kwargs):
+        pass
+
+    def __call__(self, *args, **kwargs):
+        raise RuntimeError("DisabledServer was called -- check that its ensemble weight is 0.")
 
 
 class InferenceServer:
@@ -128,6 +169,8 @@ class InferenceServer:
                 timeout=self.timeout,
                 max_retries=0,
             )
+        else:
+            raise ValueError(f"Unsupported server type: {server_type}")
 
         self.client = client
         self.model = model_name
@@ -266,6 +309,7 @@ class LLMEnsemble:
         weights: list | str = "uniform",
         weights_warmstart: list | None = None,
         trials_warmstart: int = 0,
+        **kwargs,
     ):
         """Initialize an ensemble of inference servers.
 
@@ -275,14 +319,26 @@ class LLMEnsemble:
             weights_warmstart (list | None): Alternative weights for warmstart trials. Defaults to None.
             trials_warmstart (int): Number of trials to use warmstart weights. Defaults to 0.
         """
-        self.servers = servers
-        self.n_servers = len(servers)
-        self.weights = weights
+        # Drop unused ensemble slots (provider: null) entirely instead of keeping them
+        # around at weight 0 -- there is nothing useful to ever select there.
+        keep_mask = [not isinstance(s, DisabledServer) for s in servers]
+        if not any(keep_mask):
+            raise ValueError("No inference servers configured (every slot is disabled / provider: null).")
+        self.servers = [s for s, keep in zip(servers, keep_mask) if keep]
+        self.n_servers = len(self.servers)
+        # Set weights and normalize so weights like [1, 1, 1] don't need to be
+        # hand-computed to sum to 1.
         if weights == "uniform":
-            self.weights = [1.0 / len(servers)] * len(servers)
+            weights = [1.0] * self.n_servers
+        total = sum(weights)
+        self.weights = [w / total for w in weights]
+
+        # warmstart
+        if weights_warmstart is not None:
+            total_warmstart = sum(weights_warmstart)
+            weights_warmstart = [w / total_warmstart for w in weights_warmstart]
         self.weights_warmstart = weights_warmstart
         self.trials_warmstart = trials_warmstart
-        logging.info(f"Initialized ensemble of models: {[s.model for s in self.servers]}")
 
     def __call__(self, *args, **kwargs):
         trial = kwargs.get("trial", None)

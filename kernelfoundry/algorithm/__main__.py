@@ -16,9 +16,11 @@ load_dotenv(os.environ.get("KERNELFOUNDRY_ENV_FILE", Path.cwd() / ".env"))
 
 import kernelfoundry.eval_pipeline.database as db
 from kernelfoundry.eval_pipeline.task import Task
+from kernelfoundry.algorithm.schemas import EvalResult, Program
 from kernelfoundry.algorithm.utils.kernelbench_dataset import load_kernelbench_task
 from kernelfoundry.algorithm.controller import Controller
 from kernelfoundry.algorithm.utils.kernelbench_dataset import get_kernelbench_task_id
+from kernelfoundry.algorithm.utils.score import select_best_solution
 from kernelfoundry.eval_pipeline.utils.custom_task_helper import dict_to_yaml_str
 from kernelfoundry.algorithm.utils.database_log_handler import DatabaseLogHandler
 from kernelfoundry.algorithm.utils.validate_task import validate_task
@@ -114,6 +116,31 @@ def _merge_run_config(
     return merged_config
 
 
+def _best_program(all_results: list[tuple[Program, EvalResult]]) -> Program | None:
+    """Pick the best-scoring program from a flat list of (Program, EvalResult) pairs."""
+    if not all_results:
+        return None
+    best_idx = select_best_solution([eval_result for _, eval_result in all_results])
+    return all_results[best_idx][0]
+
+
+def _save_best_kernel(best_program: Program | None, config: DictConfig) -> None:
+    """Save the best program's evolve blocks to disk, if enabled in config."""
+    if not config.get("save_best_kernel", False):
+        return
+
+    best_exec_result = best_program.kernel_exec_result if best_program is not None else None
+    if best_exec_result is None or not best_exec_result.compiled or not best_exec_result.correctness:
+        logging.info("Best generated result is not valid (does not compile or is incorrect). Skipping kernel save.")
+        return
+
+    evolve_save_path = Path(config.results_dir) / config.job_name / config.task_name / "evolve.json"
+    evolve_save_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(evolve_save_path, "w", encoding="utf-8") as f:
+        json.dump(best_program.code, f, indent=2, ensure_ascii=False)
+    logging.info(f"Saved evolve blocks to {evolve_save_path}")
+
+
 def _cleanup_task_path(config: DictConfig) -> None:
     if not config.get("clean_up_afterwards", False):
         return
@@ -184,36 +211,9 @@ def submit_task(config: DictConfig):
 
         # KERNEL GENERATION
         if merged_config.max_iters > 0:
-
-            # If saving is enabled, create the generated task folder structure
-            save_best_kernel = merged_config.get("save_best_kernel", False)
-
-            # Run task
             controller = Controller(config=merged_config, job_id=job_id, task_id=task_id)
-            run_output = controller.run_single(task)
-
-            # Save evolve blocks from the best generated kernel to disk
-            if save_best_kernel:
-                programs, best_uuid = run_output
-                best_program = programs[best_uuid]
-                best_exec_result = best_program.kernel_exec_result
-                if best_exec_result is not None and best_exec_result.compiled and best_exec_result.correctness:
-                    evolve_blocks = best_program.code
-                    evolve_save_path = (
-                        Path(merged_config.results_dir)
-                        / merged_config.job_name
-                        / merged_config.task_name
-                        / "evolve.json"
-                    )
-                    evolve_save_path.parent.mkdir(parents=True, exist_ok=True)
-                    with open(evolve_save_path, "w", encoding="utf-8") as f:
-                        json.dump(evolve_blocks, f, indent=2, ensure_ascii=False)
-                    logging.info(f"Saved evolve blocks to {evolve_save_path}")
-                else:
-                    logging.info(
-                        "Best generated result is not valid (does not compile or is incorrect). "
-                        "Skipping kernel save."
-                    )
+            programs, best_uuid = controller.run_single(task)
+            _save_best_kernel(programs.get(best_uuid), merged_config)
         else:
             db.update_job_progress(job_id, 1.0)
     except KeyboardInterrupt:
@@ -264,15 +264,18 @@ def submit_agentic_task(config: DictConfig, env_overrides: dict[str, str] | None
         task.config["task_id"] = task_id
 
         if merged_config.max_iters > 0:
+            # pass env_overrides only if not None to avoid overwriting settings in controller config
+            controller_kwargs = {"env_overrides": env_overrides} if env_overrides else {}
             controller = hydra.utils.instantiate(
                 merged_config.controller,
                 run_config=merged_config,
                 job_id=job_id,
                 task_id=task_id,
-                env_overrides=env_overrides or None,
+                **controller_kwargs,
                 _recursive_=False,
             )
-            controller.run(task)
+            all_results = controller.run(task)
+            _save_best_kernel(_best_program(all_results), merged_config)
 
             if store_generated_kernels_in_db:
                 db.update_job_status(job_id, status="COMPLETE", finished_at=datetime.now(timezone.utc))

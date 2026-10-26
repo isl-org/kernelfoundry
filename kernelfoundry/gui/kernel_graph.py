@@ -302,6 +302,7 @@ def kernel_graph_page(
                         current_user_id = None if e.value else user_id
                         op_name_input.options = get_op_names(current_user_id)
                         op_name_input.value = None
+                        op_name_input.update()
                         run_input.value = None
                         run_input.options = []
                         run_input.update()
@@ -323,8 +324,11 @@ def kernel_graph_page(
                 def on_plot():
                     if op_name_input.value is not None and run_input.value is not None:
                         url = f"/graph?job_name={run_input.value}&task_name={op_name_input.value}"
-                        if user_id:
-                            url += f"&user_id={user_id}"
+                        if show_all_state["value"]:
+                            # Explicit empty idsid -> do not fall back to stored ID
+                            url += "&idsid="
+                        elif user_id:
+                            url += f"&idsid={user_id}"
                         ui.navigate.to(url)
                     else:
                         ui.notify("Please select both task name and job name", color="warning")

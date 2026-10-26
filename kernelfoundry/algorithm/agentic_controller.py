@@ -13,6 +13,7 @@ import hydra
 import numpy as np
 
 from kernelfoundry.algorithm.copilot_cli_agent import CopilotCLIAgent
+from kernelfoundry.algorithm.utils.copilot_provider import resolve_copilot_env
 from kernelfoundry.algorithm.schemas import EvalResult, Program
 import kernelfoundry.eval_pipeline.database as db
 from kernelfoundry.eval_pipeline.task import Task, TestResult
@@ -27,31 +28,35 @@ from kernelfoundry.algorithm.prompts.optimization_aware import (
     get_optimization_guidance_for_parent,
 )
 from kernelfoundry.algorithm.utils.logging import setup_logging
-from kernelfoundry.algorithm.utils.skills import Skill, SkillLibrary
+from kernelfoundry.algorithm.utils.reference_cache import load_cached_reference, store_reference
+from kernelfoundry.algorithm.utils.analytical_roofline import (
+    build_analytical_roofline_prompt,
+    read_analytical_roofline_output,
+    read_user_supplied_analytical_roofline,
+)
+from kernelfoundry.algorithm.utils.skills import SkillError, load_skill_by_name, load_skills_for_language
 from kernelfoundry.eval_pipeline.profiler_feedback import (
-    get_profiler_feedback_class,
     get_reference_language_for_profiling,
 )
 from kernelfoundry.algorithm.utils.token_usage import zero_token_usage
 
-# Extra ``languages`` metadata values that should match a given task language
-# when filtering skills. The task language maps to the set of accepted values.
-LANGUAGE_ALIASES: dict[str, list[str]] = {
-    "opencl": ["opencl", "ocl"],
-}
 
-# def _build_prompt(task: Task) -> str:
-#     """Build a simple prompt from the task's USER_INSTRUCTIONS block, falling back to a generic one."""
-#     user_instructions = task.blocks.get("USER_INSTRUCTIONS", {})
-#     if user_instructions:
-#         return "\n\n".join(user_instructions.values())
+def _resolve_env_overrides(inference_cfg, env_overrides: dict[str, str] | None) -> dict[str, str]:
+    """Merge ``COPILOT_*`` env vars derived from ``inference_cfg`` with explicit *env_overrides*.
 
-#     language = task.config.get("language", "kernel")
-#     return (
-#         f"Optimize the {language} code in this workspace for better performance. "
-#         f"Use the build_and_test tool to evaluate your changes after each modification."
-#         f"Explain your strategy and reasoning in detail and summarize the changes you do each step."
-#     )
+    ``inference_cfg`` is ``run_config.inference`` (provider/model/base_url; ensembles are
+    ignored, Copilot only ever runs one model). Explicit *env_overrides* win on key conflicts.
+    """
+    config_env_overrides = (
+        resolve_copilot_env(
+            provider=inference_cfg.get("provider"),
+            model=inference_cfg.get("model"),
+            base_url=inference_cfg.get("base_url"),
+        )
+        if inference_cfg is not None
+        else None
+    )
+    return {**(config_env_overrides or {}), **(env_overrides or {})}
 
 
 class AgenticController(PromptEvolutionMixin):
@@ -63,7 +68,10 @@ class AgenticController(PromptEvolutionMixin):
         job_id: Job identifier passed through to the agent.
         task_id: Task identifier (stored for reference).
         copilot_exe: Path or name of the Copilot CLI binary.
-        env_overrides: Extra environment variables forwarded to the Copilot subprocess.
+        env_overrides: Extra environment variables forwarded to the Copilot subprocess, on
+            top of the ``COPILOT_*`` vars derived from ``run_config.inference`` (provider,
+            model, base_url) via :func:`~kernelfoundry.algorithm.utils.copilot_provider.resolve_copilot_env`.
+            Keys set here take precedence over the config-derived ones.
         agent_timeout: Per-iteration timeout in seconds.
         logging_level: Logging level for the file handler added by this controller.
         extra_mcp_servers: Optional additional MCP server definitions merged into
@@ -85,10 +93,10 @@ class AgenticController(PromptEvolutionMixin):
         self.job_id = job_id
         self.task_id = task_id
         self.copilot_exe = copilot_exe
-        self.env_overrides = env_overrides
+        self.env_overrides = _resolve_env_overrides(run_config.get("inference"), env_overrides)
         self.agent_timeout = agent_timeout
         self.extra_mcp_servers = dict(extra_mcp_servers or {})
-        self.skills = self._load_skills()
+        self.skills = load_skills_for_language(self.config)
 
         setup_logging(Path(run_config.logdir) / "controller.log", logging_level=logging_level)
         TaskRunner.init(use_queue=run_config.get("use_queue", True), gpu_arch=run_config.gpu_arch)
@@ -102,16 +110,14 @@ class AgenticController(PromptEvolutionMixin):
 
         self.reference_language = self.config.prompt.get("reference_language", "Pytorch")
 
-        self.llm_server = hydra.utils.instantiate(self.config.inference)
-        logging.info(f"Initiated LLM with config {self.config.inference}")
-
         self.feedback_helper = FeedbackHelper(
             use_feedback_llm=self.config.use_feedback_llm,
             language=self.config.language,
             server_config=self.config.feedback_llm_config,
             use_docs_via_keywords=self.config.use_docs_via_keywords,
         )
-        logging.info(f"Initiated feedback LLM with config: {self.config.feedback_llm_config}")
+        if self.config.use_feedback_llm:
+            logging.info(f"Initiated feedback LLM with config: {self.config.feedback_llm_config}")
 
         mcp_prompt_list = [
             str(server_cfg.get("prompt")) for server_cfg in self.extra_mcp_servers.values() if server_cfg.get("prompt")
@@ -135,38 +141,6 @@ class AgenticController(PromptEvolutionMixin):
 
         # Initialize prompt evolution system (from PromptEvolutionMixin)
         self.setup_prompt_evolution()
-
-    def _load_skills(self) -> list[Skill]:
-        """Load skills from ``config.skills.directories`` filtered by language.
-
-        Relative directories are resolved against the repository root. For
-        OpenCL tasks, skills tagged with either ``opencl`` or ``ocl`` are
-        included.
-        """
-        skills_config = self.config.get("skills", None)
-        directories = skills_config.get("directories", None) if skills_config else None
-        language = self.config.get("language")
-        if not directories or not language:
-            return []
-
-        languages_include = LANGUAGE_ALIASES.get(language.lower(), [language])
-        skills: list[Skill] = []
-        for directory in directories:
-            directory_path = Path(directory)
-            if not directory_path.is_absolute():
-                directory_path = Path.cwd() / directory_path
-            if not directory_path.is_dir():
-                logging.warning("Skills directory does not exist: %s", directory_path)
-                continue
-            library = SkillLibrary.load(directory_path)
-            skills.extend(library.filter(languages_include=languages_include))
-
-        logging.info(
-            "Checked the KernelFoundry skills database for skills for language %r: %d skill(s) loaded",
-            language,
-            len(skills),
-        )
-        return skills
 
     @staticmethod
     def build_container_image_for_task(task: Task) -> Task:
@@ -446,7 +420,6 @@ class AgenticController(PromptEvolutionMixin):
     ) -> tuple[str, Optional[Program]]:
         """
         Construct a fresh prompt for a single branch and report the sampled parent.
-
         Args:
             problem_name: Operation name
             ref_arch_src: Reference source code
@@ -520,6 +493,18 @@ class AgenticController(PromptEvolutionMixin):
             logging.info("Skipping reference evaluation as per config")
             return task, {}
 
+        cached_reference = load_cached_reference(task, task.config)
+        if cached_reference is not None:
+            task.test_result_reference, task.build_result_reference = cached_reference
+            task.config["test_reference"] = False  # already have a reference result, skip running it again downstream
+            return task, {}
+
+        # Temporarily force reference profiling for the one-shot roofline analysis
+        ai_compute_roofline = bool(task.config.get("ai_compute_roofline", False))
+        original_profiler_reference = task.config.get("profiler_reference")
+        if ai_compute_roofline and original_profiler_reference is None:
+            task.config["profiler_reference"] = "default"
+
         # backup original config
         original_config = task.config.copy()
         # alter config to run reference test only
@@ -552,11 +537,68 @@ class AgenticController(PromptEvolutionMixin):
         task.config = original_config
         # disable reference build and test for later since we already did it here
         task.config["test_reference"] = False
+        if ai_compute_roofline:
+            task.config["profiler_reference"] = original_profiler_reference
 
         # merge test results into a single EvalResult for the reference
         task.test_result_reference = TestResult.merge(test_results)
+        assert task.test_result_reference.correctness_result.returncode == 0, "Reference test failed, cannot proceed"
+
+        store_reference(task, task.config, task.test_result_reference, task.build_result_reference, self.job_id)
 
         return task, test_results
+
+    def _compute_analytical_roofline(self, task: Task, agent_container_image: Image | None) -> Optional[dict]:
+        """Run a one-shot, read-only agent session deriving an ideal roofline target.
+
+        The derived target is instruction-count-independent: it comes from the task's reference
+        math and benchmark shapes (see ``skills/analytical-roofline``), not from profiling the
+        generated kernel's own instructions.
+
+        Returns ``None`` (falling back to instruction-count roofline) if the agent's output fails
+        validation.
+
+        Raises:
+            RuntimeError: if ``ai_compute_roofline`` is enabled but the ``analytical-roofline``
+                skill is not found under any configured skills directory.
+        """
+        correctness_result = task.test_result_reference.correctness_result if task.test_result_reference else None
+        if correctness_result is None or correctness_result.returncode != 0:
+            logging.info("Skipping analytical roofline analysis: reference did not pass correctness.")
+            return None
+
+        try:
+            skill = load_skill_by_name(self.config, "analytical-roofline")
+        except SkillError:
+            raise RuntimeError(
+                "ai_compute_roofline is enabled but the 'analytical-roofline' skill was not found"
+            ) from None
+
+        agent = CopilotCLIAgent(
+            task=task,
+            job_id=self.job_id,
+            task_id=self.task_id,
+            config=task.config,
+            container_image=agent_container_image,
+            copilot_exe=self.copilot_exe,
+            env_overrides=self.env_overrides,
+            branch=-1,
+            skills=[skill],
+            extra_mcp_servers=self.extra_mcp_servers,
+        )
+        try:
+            agent.run(build_analytical_roofline_prompt(task), iteration=-1, timeout=self.agent_timeout)
+        except TimeoutError:
+            logging.error("Analytical roofline analysis timed out; falling back to the instruction-count roofline.")
+            return None
+        except Exception:
+            logging.error(
+                "Analytical roofline analysis failed; falling back to the instruction-count roofline.",
+                exc_info=True,
+            )
+            return None
+
+        return read_analytical_roofline_output(agent.task_data_dir)
 
     def run(self, task: Task) -> list[tuple[Program, EvalResult]]:
         """Create an agent for *task* and run it for ``config.max_iters`` iterations.
@@ -595,6 +637,13 @@ class AgenticController(PromptEvolutionMixin):
         task, _ = self.evaluate_reference(task)
 
         agent_container_image = self._resolve_agent_container_image(task)
+
+        # Read user-supplied analytical_roofline.json or let the agent compute one if enabled
+        analytical_roofline = read_user_supplied_analytical_roofline(task)
+        if analytical_roofline is None and self.config.get("ai_compute_roofline", False):
+            analytical_roofline = self._compute_analytical_roofline(task, agent_container_image)
+        if analytical_roofline is not None:
+            task.config["analytical_roofline"] = analytical_roofline
 
         all_results: list[tuple[Program, EvalResult]] = []
         token_usage_total = zero_token_usage()
@@ -681,6 +730,23 @@ class AgenticController(PromptEvolutionMixin):
 
             all_results.extend(iteration_results)
             logging.info("Iteration %d produced %d result(s)", i + 1, len(iteration_results))
+
+            target_roofline_pct = config.get("target_roofline_pct")
+            if target_roofline_pct is not None:
+                stop_early = False
+                for _program, eval_result in iteration_results:
+                    if not (eval_result.compiled and eval_result.correctness):
+                        continue
+                    roofline_pct_min = Program.extract_roofline_pct_min(eval_result.runtime_stats)
+                    if roofline_pct_min is not None and roofline_pct_min >= target_roofline_pct:
+                        logging.info(
+                            f"Target roofline percentage {target_roofline_pct}% reached "
+                            f"(worst case {roofline_pct_min:.1f}%), stopping early."
+                        )
+                        stop_early = True
+                        break
+                if stop_early:
+                    break
 
             # Update job progress after completing the iteration
             if self.job_id is not None:

@@ -1,5 +1,7 @@
 """Defines the Task class and related classes for managing kernel generation tasks, including build and test results."""
 
+import hashlib
+import logging
 from typing import Callable
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
@@ -9,6 +11,9 @@ from kernelfoundry.eval_pipeline.utils.memory_file_map import MemoryFileMap
 from kernelfoundry.eval_pipeline.database.tables import Task as DB_Task
 from kernelfoundry.eval_pipeline.utils.custom_task_helper import blocks_to_str
 from kernelfoundry.eval_pipeline.utils.formatting import strip_terminal_escapes
+from kernelfoundry.algorithm.prompts.languages import SUPPORTED_LANGUAGES
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -89,6 +94,14 @@ class BuildResult:
             result=ProcessResult(**data["result"]) if data.get("result") is not None else None,
             artifacts=artifacts,
         )
+
+    def encode(self) -> dict:
+        """Encodes this BuildResult to a serializable dictionary (counterpart to :meth:`decode`)."""
+        return {
+            "worker_info": self.worker_info,
+            "result": asdict(self.result) if self.result is not None else None,
+            "artifacts": self.artifacts.encode() if self.artifacts is not None else None,
+        }
 
 
 @dataclass
@@ -213,11 +226,18 @@ class Task:
         assert self.task_data is not None and len(self.task_data.file_map) > 0, "Task task_data is empty"
         assert "task.py" in self.task_data.file_map, "Task is missing task.py"
         assert "conftest.py" in self.task_data.file_map, "Task is missing conftest.py"
-        assert len(self.correctness_tests) > 0, "Task has no correctness tests"
-        assert len(self.profile_tests) > 0, "Task has no profile tests"
+        if len(self.correctness_tests) == 0:
+            logger.warning("Task has no correctness tests")
+        if len(self.profile_tests) == 0:
+            logger.warning("Task has no profile tests (one test requires @pytest.mark.performance)")
         assert "EVOLVE" in self.blocks, "Task has no EVOLVE block"
         assert "task_name" in self.config, "Task config is missing task_name"
         assert "job_name" in self.config, "Task config is missing job_name"
+        language = self.config.get("language")
+        assert language, "Task config is missing language"
+        assert (
+            language.lower() in SUPPORTED_LANGUAGES
+        ), f"Unsupported language '{language}'. Supported languages: {SUPPORTED_LANGUAGES}"
 
     @classmethod
     def create(cls, path_or_bytes: str | Path | bytes) -> tuple["Task", dict]:
@@ -250,6 +270,13 @@ class Task:
 
         # Extract information about the task
         config = get_config(task_data)
+        eval_config = config.get("eval_config", {}) or {}
+        if "profile_custom_model" in eval_config or "profile_original_model" in eval_config:
+            logger.warning(
+                "eval_config.profile_custom_model and eval_config.profile_original_model are deprecated "
+                "and will be removed in a future release; use profiler_kernel / profiler_reference instead  "
+                "(e.g. profiler_kernel: null to skip profiling the generated kernel)."
+            )
         # correct task name and job name (for backward compatability to old naming scheme)
         if "job_name" not in config and "run_name" in config:
             config["job_name"] = config["run_name"]
@@ -407,17 +434,6 @@ class Task:
 
     def encode(self) -> dict:
         """Encodes the Task to a serializable dictionary."""
-
-        # Helper to encode BuildResult with nested objects
-        def encode_build_result(build_result):
-            if build_result is None:
-                return None
-            return {
-                "worker_info": build_result.worker_info,
-                "result": asdict(build_result.result) if build_result.result is not None else None,
-                "artifacts": build_result.artifacts.encode() if build_result.artifacts is not None else None,
-            }
-
         return {
             "task_data": self.task_data.encode(),
             "has_build_step": self.has_build_step,
@@ -427,8 +443,10 @@ class Task:
             "config": self.config,
             "blocks": self.blocks,
             "extract_code_result": asdict(self.extract_code_result) if self.extract_code_result is not None else None,
-            "build_result": encode_build_result(self.build_result),
-            "build_result_reference": encode_build_result(self.build_result_reference),
+            "build_result": self.build_result.encode() if self.build_result is not None else None,
+            "build_result_reference": (
+                self.build_result_reference.encode() if self.build_result_reference is not None else None
+            ),
             "test_result": asdict(self.test_result) if self.test_result is not None else None,
             "test_result_reference": (
                 asdict(self.test_result_reference) if self.test_result_reference is not None else None
@@ -460,6 +478,30 @@ class Task:
             test_result_reference=TestResult.decode(data.get("test_result_reference")),
             hyperparameters=data.get("hyperparameters"),
         )
+
+    def reference_hash(self) -> str:
+        """Computes a content hash covering only the files relevant to the reference implementation.
+
+        Excludes config.yaml/.yml (parameters are free to change) and blanks out the content of every
+        EVOLVE and USER_INSTRUCTIONS block (the kernel code being iterated on, and free-form guidance
+        to the agent -- neither affects the reference implementation). Used to key the
+        reference-performance cache: as long as this hash and the gpu_arch are unchanged, a previously
+        benchmarked reference result can be reused instead of rebuilding/rebenchmarking it.
+        """
+        task = self
+        for key in ("EVOLVE", "USER_INSTRUCTIONS"):
+            blocks = task.blocks.get(key, {})
+            blanked = {path: [""] * len(contents) for path, contents in blocks.items()}
+            if blanked:
+                task = task.with_blocks({key: blanked}, keep_test_result_reference=True)
+
+        excluded = {"config.yaml", "config.yml"}
+        sha = hashlib.sha256()
+        for path in sorted(task.task_data.list_files()):
+            if path in excluded:
+                continue
+            sha.update(task.task_data.file_map[path].getvalue())
+        return sha.hexdigest()
 
     def to_database_task(self):
         """Convert this Task object into a db.Task object that can be written to the detabase"""

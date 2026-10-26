@@ -1,0 +1,27 @@
+# Inference through the Claude Code CLI, authenticated by a Claude subscription
+# rather than a metered API key. See docs/guide/llm-setup.md.
+#
+# "claude_cli" is registered as an inference provider (see _PROVIDER_TARGETS in
+# kernelfoundry.algorithm.inference_server), so the usual way to select it is the
+# provider/model shortcut, which also composes with an ensemble slot:
+#
+#   inference.provider=claude_cli inference.model=opus
+#   inference.model_1.provider=claude_cli inference.model_1.model=opus   # as an ensemble slot
+#
+# It is a single CLI, not an API model pool: `num_completions` > 1 just repeats the
+# invocation. disallow_tools/max_turns/effort are also settable directly through the
+# provider/model shortcut above (server.yaml passes them through, other providers ignore them).
+# timeout/max_retry/claude_exe have no generic field there, since their sensible defaults
+# differ per provider -- copy this file's contents wholesale under `inference:` in a task's
+# config.yaml to set those.
+_target_: kernelfoundry.algorithm.claude_cli_server.ClaudeCLIServer
+model_name: opus          # alias tracks latest; use a dated id to pin
+num_completions: 1
+max_tokens: null          # reporting only; the CLI has no output ceiling to hit
+temperature: null         # the CLI exposes no sampling controls -- see below
+timeout: 900
+max_retry: 3
+disallow_tools: true      # plain completion, not an agent that edits files
+max_turns: 8              # headroom: at 1, a stray tool attempt exits 1 with no output
+effort: medium            # opus spent 146 s / 10.8k thinking tokens on one kernel at default
+verbose: false

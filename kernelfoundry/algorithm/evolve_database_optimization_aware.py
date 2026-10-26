@@ -58,6 +58,9 @@ from kernelfoundry.algorithm.utils.map_elites_patterns import (
     OPENCL_MEMORY_OPT_PATTERNS,
     OPENCL_COMPUTE_OPT_PATTERNS,
     OPENCL_PARALLELISM_OPT_PATTERNS,
+    VULKAN_MEMORY_OPT_PATTERNS,
+    VULKAN_COMPUTE_OPT_PATTERNS,
+    VULKAN_PARALLELISM_OPT_PATTERNS,
     ESIMD_OPT_PATTERNS,
     TRITON_MEMORY_OPT_PATTERNS,
     TRITON_COMPUTE_OPT_PATTERNS,
@@ -248,7 +251,13 @@ class OptimizationFeatureClassifier:
                 OPENCL_MEMORY_OPT_PATTERNS,
                 OPENCL_COMPUTE_OPT_PATTERNS,
                 OPENCL_PARALLELISM_OPT_PATTERNS,
+                VULKAN_MEMORY_OPT_PATTERNS,
+                VULKAN_COMPUTE_OPT_PATTERNS,
+                VULKAN_PARALLELISM_OPT_PATTERNS,
                 ESIMD_OPT_PATTERNS,  # Include ESIMD patterns
+                TRITON_MEMORY_OPT_PATTERNS,
+                TRITON_COMPUTE_OPT_PATTERNS,
+                TRITON_PARALLELISM_OPT_PATTERNS,
             ]
 
             patterns_compiled = 0
@@ -430,6 +439,10 @@ class OptimizationFeatureClassifier:
         """
         # Select pattern sets based on language
         lang = language.lower()
+        # CM kernels use the OpenCL-compatible pattern family for static
+        # optimization classification.
+        if lang == "cm":
+            lang = "opencl"
         if lang in ["cuda", "cu"]:
             memory_patterns = cls._merge_patterns(MEMORY_OPT_PATTERNS, CUDA_MEMORY_OPT_PATTERNS)
             compute_patterns = cls._merge_patterns(COMPUTE_OPT_PATTERNS, CUDA_COMPUTE_OPT_PATTERNS)
@@ -440,6 +453,11 @@ class OptimizationFeatureClassifier:
             compute_patterns = cls._merge_patterns(COMPUTE_OPT_PATTERNS, OPENCL_COMPUTE_OPT_PATTERNS)
             parallelism_patterns = cls._merge_patterns(PARALLELISM_OPT_PATTERNS, OPENCL_PARALLELISM_OPT_PATTERNS)
             esimd_patterns = {}  # ESIMD not applicable to OpenCL
+        elif lang in ["vulkan", "glsl", "spirv", "spir-v"]:
+            memory_patterns = cls._merge_patterns(MEMORY_OPT_PATTERNS, VULKAN_MEMORY_OPT_PATTERNS)
+            compute_patterns = cls._merge_patterns(COMPUTE_OPT_PATTERNS, VULKAN_COMPUTE_OPT_PATTERNS)
+            parallelism_patterns = cls._merge_patterns(PARALLELISM_OPT_PATTERNS, VULKAN_PARALLELISM_OPT_PATTERNS)
+            esimd_patterns = {}  # ESIMD not applicable to Vulkan
         elif lang in ["triton"]:
             memory_patterns = TRITON_MEMORY_OPT_PATTERNS
             compute_patterns = TRITON_COMPUTE_OPT_PATTERNS
@@ -452,7 +470,7 @@ class OptimizationFeatureClassifier:
             esimd_patterns = ESIMD_OPT_PATTERNS  # ESIMD only for SYCL
         else:
             raise ValueError(
-                f"Unsupported language '{language}' for classification. Supported: sycl, cuda, opencl, ocl, cl, cu, triton"
+                f"Unsupported language '{language}' for classification. Supported: sycl, cuda, opencl, ocl, cl, cu, vulkan, triton"
             )
 
         # Classify each dimension
@@ -483,6 +501,8 @@ class OptimizationFeatureClassifier:
         """
         # Select pattern sets based on language
         lang = language.lower()
+        if lang == "cm":
+            lang = "opencl"
         if lang in ["cuda", "cu"]:
             memory_patterns = cls._merge_patterns(MEMORY_OPT_PATTERNS, CUDA_MEMORY_OPT_PATTERNS)
             compute_patterns = cls._merge_patterns(COMPUTE_OPT_PATTERNS, CUDA_COMPUTE_OPT_PATTERNS)
@@ -494,6 +514,12 @@ class OptimizationFeatureClassifier:
             compute_patterns = cls._merge_patterns(COMPUTE_OPT_PATTERNS, OPENCL_COMPUTE_OPT_PATTERNS)
             parallelism_patterns = cls._merge_patterns(PARALLELISM_OPT_PATTERNS, OPENCL_PARALLELISM_OPT_PATTERNS)
             esimd_patterns = {}  # ESIMD not applicable to OpenCL
+        elif lang in ["vulkan", "glsl", "spirv", "spir-v"]:
+            logging.info("Classifying Vulkan code - using Vulkan-specific (GLSL) patterns")
+            memory_patterns = cls._merge_patterns(MEMORY_OPT_PATTERNS, VULKAN_MEMORY_OPT_PATTERNS)
+            compute_patterns = cls._merge_patterns(COMPUTE_OPT_PATTERNS, VULKAN_COMPUTE_OPT_PATTERNS)
+            parallelism_patterns = cls._merge_patterns(PARALLELISM_OPT_PATTERNS, VULKAN_PARALLELISM_OPT_PATTERNS)
+            esimd_patterns = {}  # ESIMD not applicable to Vulkan
         elif lang in ["triton"]:
             logging.info("Classifying Triton code - using Triton-specific patterns")
             memory_patterns = TRITON_MEMORY_OPT_PATTERNS
@@ -555,6 +581,8 @@ class OptimizationFeatureClassifier:
 
         # Select pattern sets based on language
         lang = language.lower()
+        if lang == "cm":
+            lang = "opencl"
         if lang in ["cuda", "cu"]:
             pattern_sets = {
                 "memory": cls._merge_patterns(MEMORY_OPT_PATTERNS, CUDA_MEMORY_OPT_PATTERNS),
@@ -568,6 +596,13 @@ class OptimizationFeatureClassifier:
                 "compute": cls._merge_patterns(COMPUTE_OPT_PATTERNS, OPENCL_COMPUTE_OPT_PATTERNS),
                 "parallelism": cls._merge_patterns(PARALLELISM_OPT_PATTERNS, OPENCL_PARALLELISM_OPT_PATTERNS),
                 "esimd": {},  # ESIMD not applicable to OpenCL
+            }
+        elif lang in ["vulkan", "glsl", "spirv", "spir-v"]:
+            pattern_sets = {
+                "memory": cls._merge_patterns(MEMORY_OPT_PATTERNS, VULKAN_MEMORY_OPT_PATTERNS),
+                "compute": cls._merge_patterns(COMPUTE_OPT_PATTERNS, VULKAN_COMPUTE_OPT_PATTERNS),
+                "parallelism": cls._merge_patterns(PARALLELISM_OPT_PATTERNS, VULKAN_PARALLELISM_OPT_PATTERNS),
+                "esimd": {},  # ESIMD not applicable to Vulkan
             }
         elif lang in ["triton"]:
             pattern_sets = {

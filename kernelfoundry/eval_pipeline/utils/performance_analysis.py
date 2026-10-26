@@ -1,7 +1,11 @@
 """Helper functions for analyzing performance data from profilers like Unitrace"""
 
+import logging
+
 import pandas as pd
 from kernelfoundry.eval_pipeline.utils.hardware_info import hardware_info, HardwareRoofs
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "get_roofs",
@@ -19,15 +23,18 @@ def get_roofs(worker_info: dict) -> HardwareRoofs | None:
     Returns:
         HardwareRoofs | None: The hardware roofs or None if not found.
     """
-
-    try:
-        cpu_name = worker_info["cpu_info"]
-        hw_info = hardware_info.get(cpu_name, None)
-        if hw_info is None:
-            hw_info = hardware_info.get(worker_info["gpu_name"], None)
-        return hw_info.roofs
-    except:
+    cpu_name = worker_info.get("cpu_info")
+    gpu_name = worker_info.get("gpu_name")
+    hw_info = hardware_info.get(cpu_name) or hardware_info.get(gpu_name)
+    if hw_info is None:
+        logger.warning(
+            "No hardware_info entry for cpu=%r gpu=%r; roofline analysis unavailable for this worker. "
+            "Add an entry to hardware_info.py to enable it.",
+            cpu_name,
+            gpu_name,
+        )
         return None
+    return hw_info.roofs
 
 
 def compute_arithmic_intensity(

@@ -42,6 +42,21 @@ class HardwareRoofs:
     def __getitem__(self, key: str) -> float | None:
         return self.get(key)
 
+    def peak_flops(self, dtype: str) -> float | None:
+        """Peak FLOPs/s for *dtype* (one of ``fp16``/``fp32``/``fp64``).
+
+        Derived from measured instruction throughput (``XVE_INST_EXECUTED_<DTYPE>``, in
+        G-instructions/s) and the measured operations-per-instruction factor
+        (``OPS_PER_INST_<DTYPE>``). Returns ``None`` for dtypes without a measured
+        ``OPS_PER_INST_*`` factor (e.g. XMX/tensor-core paths), or an unrecognized dtype.
+        """
+        dtype = dtype.upper()
+        inst_per_ns = getattr(self, f"XVE_INST_EXECUTED_{dtype}", None)
+        ops_per_inst = getattr(self, f"OPS_PER_INST_{dtype}", None)
+        if inst_per_ns is None or ops_per_inst is None:
+            return None
+        return inst_per_ns * ops_per_inst * 1e9
+
     def __contains__(self, key: str) -> bool:
         return self.get(key) is not None
 
@@ -172,3 +187,8 @@ hardware_info = {
 }
 # aliases
 hardware_info["Intel(R) Core(TM) Ultra 7 268V 2.20GHz"] = hardware_info["Intel(R) Core(TM) Ultra 7 268V"]
+# Some NEO driver versions report the generic "[Intel Graphics]" PCI device name instead of
+# the marketing name "[Arc B580]" for the same Battlemage G21 discrete GPU.
+hardware_info["Intel Corporation Battlemage G21 [Intel Graphics]"] = hardware_info[
+    "Intel Corporation Battlemage G21 [Arc B580]"
+]

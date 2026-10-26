@@ -6,3 +6,17 @@ language: SYCL # The target language
 
 # further run parameters (e.g. number of iterations, branches, etc for the evolutionary algorithm),
 # see kernelfoundry/configs/run.yaml
+
+# By default this uses whatever kernelfoundry/configs/inference/server.yaml provides. To
+# use a specific model, or an ensemble, override inference here, e.g.:
+inference:
+  provider: openai
+  model: gpt-5.4
+# or for an ensemble:
+# inference:
+#   model_1:
+#     provider: openai
+#     model: gpt-5.4
+#   model_2:
+#     provider: anthropic
+#     model: claude-sonnet-4.5

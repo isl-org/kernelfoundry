@@ -1,0 +1,21 @@
+// [EVOLVE_START]
+#include <cm/cm.h>
+
+extern "C" _GENX_MAIN_
+void gemm(float * A [[type("svmptr_t")]],
+          float * B [[type("svmptr_t")]],
+          float * C [[type("svmptr_t")]],
+          int M, int K, int N)
+{
+    // OPTIMIZED GEMM IMPLEMENTATION HERE
+    const int row = cm_linear_global_id();
+    if (row >= M) return;
+
+    for (int col = 0; col < N; ++col) {
+        float acc = 0.0f;
+        for (int k = 0; k < K; ++k)
+            acc += A[row * K + k] * B[k * N + col];
+        C[row * N + col] = acc;
+    }
+}
+// [EVOLVE_END]

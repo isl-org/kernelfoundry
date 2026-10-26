@@ -131,11 +131,35 @@ class ProblemLogger:
                 ouf.write("=" * 30)
 
     def log_eval_results(self, eval_results: list) -> None:
-        """Write eval results to a file"""
+        """Write eval results to a file.
+
+        Raw profiler payloads (e.g. unitrace metrics CSVs) can be large, and are only
+        needed transiently to build the human-readable profiler feedback text (already
+        saved separately in eval_log / the prompt files), so large string values inside
+        ``profiler_data`` are trimmed to a short preview here to keep these files small
+        and easy to open/diff/sync.
+        """
         eval_out_path_part = f"eval_result_level_{self.level}_problem_{self.problem_id}_trial_{self.trial}"
         for version, exec_res in enumerate(eval_results):
+            result_dict = exec_res.to_dict()
+            result_dict["profiler_data"] = self._trim_large_profiler_values(result_dict.get("profiler_data"))
             with open(os.path.join(self.logdir, eval_out_path_part + f"_v{version}.json"), "w", encoding="utf-8") as f:
-                json.dump(exec_res.to_dict(), f, indent=4)
+                json.dump(result_dict, f, indent=4)
+
+    _MAX_PROFILER_VALUE_CHARS = 20_000
+
+    @classmethod
+    def _trim_large_profiler_values(cls, obj):
+        """Recursively replace very large string values with a short preview + size note."""
+        if isinstance(obj, str):
+            if len(obj) > cls._MAX_PROFILER_VALUE_CHARS:
+                return f"<omitted: {len(obj)} chars, preview: {obj[:200]!r}...>"
+            return obj
+        if isinstance(obj, dict):
+            return {k: cls._trim_large_profiler_values(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [cls._trim_large_profiler_values(v) for v in obj]
+        return obj
 
     def save_gen_kernel(self, custom_kernel: str) -> None:
         """Save the generated kernel code to a file."""

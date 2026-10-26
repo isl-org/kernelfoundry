@@ -439,12 +439,12 @@ After analysis, explain your tiling strategy (grid shape, block sizes, accumulat
         return regions_cuda
     elif language.upper() == "SYCL":
         return regions_sycl
-    elif language.upper() == "OCL":
+    elif language.upper() in ("OCL", "CM", "VULKAN"):
         return regions_opencl
     elif language.upper() == "TRITON":
         return regions_triton
     else:
-        raise ValueError(f"Unsupported language: {language}. Supported: CUDA, SYCL, OCL, triton")
+        raise ValueError(f"Unsupported language: {language}. Supported: CUDA, SYCL, OCL, CM, triton, vulkan")
 
 
 # =============================================================================

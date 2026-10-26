@@ -13,13 +13,16 @@ import traceback
 import zipfile
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import quote, urlsplit
 
 import httpx
 import yaml
 from fastmcp import Context, FastMCP
 from omegaconf import OmegaConf
+from pydantic import BaseModel, Field
 
 CONFIG_PATH = Path.home() / ".config" / "kernelfoundry" / "config.yml"
+DEFAULT_LOCAL_UI_URL = "http://localhost:8885"
 
 TERMINAL_STATUSES = {"COMPLETE", "FAIL", "CANCELED", "VALIDATED"}
 SUCCESS_STATUSES = {"COMPLETE", "VALIDATED"}
@@ -29,7 +32,20 @@ mcp = FastMCP("kernelfoundry", instructions="Tools for working with kernelfoundr
 _internal_comm_path: str | None = None
 
 
-async def _build_and_test_via_internal_comm(folder_path: str, ctx: Context) -> dict[str, Any]:
+class BuildAndTestResult(BaseModel):
+    """Structured result returned by the ``build_and_test`` MCP tool."""
+
+    success: bool
+    job_id: int
+    eval_log: str
+    runtime_stats: dict[str, Any] = Field(default_factory=dict)
+    speedup: float | str = "N/A"
+    best_kernel_id: int | None = None
+    error: str | None = None
+    graph_url: str | None = None
+
+
+async def _build_and_test_via_internal_comm(folder_path: str, ctx: Context) -> BuildAndTestResult:
     if _internal_comm_path is None:
         raise RuntimeError("Internal communication path is not configured.")
 
@@ -79,7 +95,7 @@ async def _build_and_test_via_internal_comm(folder_path: str, ctx: Context) -> d
 
     output_done_path.unlink()
     await ctx.report_progress(progress=100, total=100)
-    return output_payload
+    return BuildAndTestResult.model_validate(output_payload)
 
 
 async def _poll_job_status(
@@ -151,6 +167,23 @@ def _load_config() -> dict[str, Any]:
     return config
 
 
+def _format_server_request_error(error: Exception, server_url: str) -> str:
+    if not isinstance(error, httpx.HTTPStatusError) or error.response.status_code != 403:
+        return str(error)
+
+    parsed_url = urlsplit(server_url)
+    host = parsed_url.hostname
+    if host and ":" in host:
+        host = f"[{host}]"
+    if host and parsed_url.port:
+        host = f"{host}:{parsed_url.port}"
+    host = host or "the server host from server_url"
+    return (
+        f"{error}. This may be a proxy issue. Add {host} to the NO_PROXY or no_proxy environment "
+        "variable for the MCP server, then restart it."
+    )
+
+
 def _zip_folder(folder: Path) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -184,7 +217,33 @@ def _get_last_kernel_uuid(folder: Path) -> str | None:
     return loaded[-1] if isinstance(loaded, list) and loaded else None
 
 
-async def _run_locally(folder: Path, ctx: Context, *, run_optimization: bool) -> dict[str, Any]:
+def _read_task_and_job_name(folder: Path) -> tuple[str | None, str | None]:
+    """Read ``task_name``/``job_name`` straight from the task folder's ``config.yaml``.
+
+    Avoids constructing a full ``Task`` (which pulls in the optional ``algo`` extra) just
+    to read two plain config fields.
+    """
+    for name in ("config.yaml", "config.yml"):
+        config_path = folder / name
+        if config_path.exists():
+            config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            return config.get("task_name"), config.get("job_name")
+    return None, None
+
+
+def _build_graph_url(server_url: str, task_name: str | None, job_name: str | None) -> str | None:
+    """Link into the KernelFoundry graph UI for the given task/job, or None if unavailable.
+
+    When running fully locally (no ``server_url`` configured), falls back to the default
+    local ``python -m kernelfoundry.gui`` address.
+    """
+    if not task_name or not job_name:
+        return None
+    base_url = (server_url or DEFAULT_LOCAL_UI_URL).rstrip("/")
+    return f"{base_url}/graph?job_name={quote(str(job_name))}&task_name={quote(str(task_name))}"
+
+
+async def _run_locally(folder: Path, ctx: Context, *, run_optimization: bool) -> BuildAndTestResult:
     """Shared local execution: validate-only or validate + optimize. Always returns the best DB kernel."""
     from hydra import compose, initialize_config_dir
 
@@ -199,6 +258,10 @@ async def _run_locally(folder: Path, ctx: Context, *, run_optimization: bool) ->
     evolve_block = source_task.blocks.get("EVOLVE")
     if not evolve_block:
         raise ValueError(f"Task at {folder} is missing required EVOLVE block.")
+
+    # _run_locally is only ever called when no server_url is configured, so the graph
+    # link falls back to the default local `python -m kernelfoundry.gui` address.
+    graph_url = _build_graph_url("", source_task.config.get("task_name"), source_task.config.get("job_name"))
 
     # Load base config using Hydra's config composition
     config_dir = CONFIG_DIR
@@ -254,14 +317,13 @@ async def _run_locally(folder: Path, ctx: Context, *, run_optimization: bool) ->
 
         if not kernels:
             await ctx.report_progress(progress=100, total=100)
-            return {
-                "success": True,
-                "job_id": int(job_id),
-                "eval_log": "No kernels produced.",
-                "runtime_stats": {},
-                "speedup": "N/A",
-                "best_kernel_id": None,
-            }
+            return BuildAndTestResult(
+                success=True,
+                job_id=int(job_id),
+                eval_log="No kernels produced.",
+                speedup="N/A",
+                graph_url=graph_url,
+            )
 
         best = max(
             kernels,
@@ -274,25 +336,25 @@ async def _run_locally(folder: Path, ctx: Context, *, run_optimization: bool) ->
         if run_optimization and best.output_code:
             _apply_output_code(folder=folder, output_code=str(best.output_code))
         await ctx.report_progress(progress=100, total=100)
-        return {
-            "success": True,
-            "job_id": int(job_id),
-            "eval_log": best.eval_log or "",
-            "runtime_stats": best.runtime_stats or {},
-            "speedup": best.improve_over_native if best.improve_over_native and best.improve_over_native > 0 else "N/A",
-            "best_kernel_id": best.id,
-        }
+        return BuildAndTestResult(
+            success=True,
+            job_id=int(job_id),
+            eval_log=best.eval_log or "",
+            runtime_stats=best.runtime_stats or {},
+            speedup=best.improve_over_native if best.improve_over_native and best.improve_over_native > 0 else "N/A",
+            best_kernel_id=best.id,
+            graph_url=graph_url,
+        )
     except Exception as e:
         await ctx.report_progress(progress=100, total=100)
-        return {
-            "success": False,
-            "job_id": int(job_id),
-            "eval_log": f"Local execution failed with exception:\n{traceback.format_exc()}",
-            "runtime_stats": {},
-            "speedup": "N/A",
-            "best_kernel_id": None,
-            "error": str(e),
-        }
+        return BuildAndTestResult(
+            success=False,
+            job_id=int(job_id),
+            eval_log=f"Local execution failed with exception:\n{traceback.format_exc()}",
+            speedup="N/A",
+            error=str(e),
+            graph_url=graph_url,
+        )
     finally:
         _logging.getLogger().removeHandler(db_handler)
         db_handler.close()
@@ -352,6 +414,28 @@ def _kernel_performance_score(kernel: dict[str, Any]) -> float:
     return score
 
 
+def _ensure_db() -> None:
+    """Lazily initialize a direct DB connection, once per process.
+
+    Unlike ``build_and_test``/``submit_task`` (which may delegate evaluation to a remote GPU
+    worker via ``server_url``), DB reads always connect directly: ``db.init()`` already picks
+    the shared Postgres instance when ``DB_IP`` is set in the environment, or falls back to
+    local SQLite otherwise.
+    """
+    import kernelfoundry.eval_pipeline.database as db
+
+    if db.SessionRO is not None:
+        return
+
+    from hydra import compose, initialize_config_dir
+
+    from kernelfoundry import CONFIG_DIR
+
+    with initialize_config_dir(version_base="1.3", config_dir=str(CONFIG_DIR)):
+        cfg = compose(config_name="run")
+    db.init(cfg)
+
+
 async def _run_server_job(
     folder: Path,
     ctx: Context,
@@ -374,7 +458,7 @@ async def _run_server_job(
 
     Returns:
         Dict with ``success``, ``job_id``, ``eval_log``, ``runtime_stats``,
-        ``speedup``, and ``chosen_kernel_id`` keys.
+        ``speedup``, ``chosen_kernel_id``, and ``graph_url`` keys.
     """
     config = _load_config()
     server_url = str(config.get("server_url", "")).rstrip("/")
@@ -388,6 +472,9 @@ async def _run_server_job(
     timeout = float(config.get("timeout", 1200.0))
     poll_interval = float(config.get("poll_interval", 5.0))
     max_wait = float(config.get("max_wait", 3600.0))
+
+    task_name, job_name = _read_task_and_job_name(folder)
+    graph_url = _build_graph_url(server_url, task_name, job_name)
 
     archive_bytes = _zip_folder(folder)
 
@@ -493,7 +580,197 @@ async def _run_server_job(
         "speedup": speedup,
         "chosen_kernel_id": chosen_kernel_id,
         "_output_code": output_code,
+        "graph_url": graph_url,
     }
+
+
+@mcp.tool()
+async def search_kernels_in_db(
+    task_name_contains: str | None = None,
+    task_name: str | None = None,
+    output_code_contains: str | None = None,
+    output_code_terms: list[str] | None = None,
+    output_language: str | None = None,
+    gpu_arch_contains: str | None = None,
+    gpu_arch: str | None = None,
+    max_runtime: float | None = None,
+    min_speedup: float | None = None,
+    max_speedup: float | None = None,
+    limit: int = 20,
+    offset: int = 0,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Searches the shared KernelFoundry kernel database for previously generated kernels.
+
+    Every task run through KernelFoundry (``submit_task``/``build_and_test``) writes one row
+    per generated kernel to a shared database. Use this tool to find prior kernels matching a
+    task or code pattern -- e.g. to see how other kernels solved a similar problem, or to check
+    whether a given optimization construct has already been tried. Follow up on interesting
+    matches with ``get_kernel_from_db(id)`` to fetch the full source and evaluation log.
+
+    Always restricted to kernels with ``status == "correct"`` and ``speedup > 0.5`` (ratio over
+    reference, e.g. 1.5 = 1.5x faster) -- below 1.0x since a kernel can still be
+    good if compared against an especially strong native reference. Results are diversified
+    across task_name (each task's best kernel first, then each task's second-best, and so
+    on) rather than plain speedup order, since one job produces many near-identical
+    iterations of the same task. All other filters are optional and combined with AND.
+
+    Args:
+        task_name: Case-insensitive exact match on the task name.
+        task_name_contains: Case-insensitive substring match on the task name, e.g. "gemm".
+        output_code_contains: Case-insensitive substring match on the generated kernel source,
+            e.g. "dpas" to find kernels using that intrinsic.
+        output_code_terms: Case-insensitive search terms; every term must occur in the generated
+            kernel source.
+        output_language: Exact match (case-insensitive), e.g. "sycl", "cuda", "triton", "cm" (C for
+            Metal).
+        gpu_arch_contains: Case-insensitive substring match on the GPU architecture string,
+            e.g. "bmg" (matches both a plain "bmg" value and combos like "bmg,lnl").
+        gpu_arch: Case-insensitive exact match on the GPU architecture string.
+        max_runtime: Upper bound on runtime, in milliseconds.
+        min_speedup: Lower bound on speedup ratio (on top of the always-applied >0.5x floor),
+            e.g. 1.5 = 1.5x faster than native.
+        max_speedup: Upper bound on speedup ratio, e.g. 1.5 = 1.5x faster than native.
+        limit: Max rows to return, clamped to [1, 100]. Defaults to 20.
+        offset: Zero-based row offset, for paging through results beyond `limit`.
+
+    Returns:
+        dict: A dictionary with the following keys:
+
+            - success (bool): Whether the search completed successfully.
+            - total_count (int): Total number of matching rows across all pages.
+            - results (list[dict]): One compact entry per match with keys id, uuid, task_name,
+              job_name, input_language, output_language, runtime (milliseconds), speedup
+              (ratio, e.g. 1.5 = 1.5x faster than native), gpu_arch, timestamp, and
+              output_code_preview (the code is truncated -- call ``get_kernel_from_db(id)``
+              for the full source).
+            - error (str | None): Error message if the search failed.
+    """
+    filters = {
+        "output_language": output_language,
+        "task_name": task_name,
+        "gpu_arch_contains": gpu_arch_contains,
+        "gpu_arch": gpu_arch,
+        "task_name_contains": task_name_contains,
+        "output_code_contains": output_code_contains,
+        "output_code_terms": output_code_terms,
+        "max_runtime": max_runtime,
+        "min_speedup": min_speedup,
+        "max_speedup": max_speedup,
+    }
+
+    if ctx is not None:
+        await ctx.report_progress(progress=10, total=100)
+
+    server_url = ""
+    try:
+        config = _load_config()
+        server_url = str(config.get("server_url", "")).rstrip("/")
+
+        if server_url:
+            # if server_url is set, use the API on the server to query the database
+            params: dict[str, Any] = {k: v for k, v in filters.items() if v is not None}
+            params.update({"limit": limit, "offset": offset})
+            headers = {"Authorization": f"Bearer {config['token']}"}
+            async with httpx.AsyncClient(timeout=float(config.get("timeout", 60.0))) as client:
+                resp = await client.get(f"{server_url}/api/kernels/search", params=params, headers=headers)
+                resp.raise_for_status()
+                payload = resp.json()
+            result = {
+                "success": True,
+                "total_count": payload.get("total_count", 0),
+                "results": payload.get("results", []),
+                "error": None,
+            }
+        else:
+            import kernelfoundry.eval_pipeline.database.queries as db_queries
+
+            _ensure_db()
+            rows, total_count = db_queries.search_kernels(filters, limit=limit, offset=offset)
+            result = {
+                "success": True,
+                "total_count": total_count,
+                "results": [db_queries.kernel_to_preview_dict(row) for row in rows],
+                "error": None,
+            }
+
+        if ctx is not None:
+            await ctx.report_progress(progress=100, total=100)
+        return result
+
+    except Exception as e:
+        logging.exception("search_kernels_in_db failed")
+        if ctx is not None:
+            await ctx.report_progress(progress=100, total=100)
+        return {
+            "success": False,
+            "total_count": 0,
+            "results": [],
+            "error": _format_server_request_error(e, server_url),
+        }
+
+
+@mcp.tool()
+async def get_kernel_from_db(
+    kernel_id: int, include_profiler_data: bool = False, ctx: Context | None = None
+) -> dict[str, Any]:
+    """Fetches the full record for one kernel found via ``search_kernels_in_db``.
+
+    Args:
+        kernel_id: Database ID of the kernel (the "id" field from search_kernels_in_db results).
+        include_profiler_data: If True, also include the detailed profiler timeline JSON
+            blobs, which can be large. Defaults to False.
+
+    Returns:
+        dict: A dictionary with the following keys:
+
+            - success (bool): Whether the lookup completed successfully.
+                        - kernel (dict | None): Kernel metadata, output_code, eval_log, runtime_stats,
+                            optimization_profile, and other compact fields, or None if no kernel with that
+                            ID exists. Large prompt/answer text is omitted.
+            - error (str | None): Error message if the lookup failed.
+    """
+    if ctx is not None:
+        await ctx.report_progress(progress=10, total=100)
+
+    server_url = ""
+    try:
+        config = _load_config()
+        server_url = str(config.get("server_url", "")).rstrip("/")
+
+        if server_url:
+            headers = {"Authorization": f"Bearer {config['token']}"}
+            async with httpx.AsyncClient(timeout=float(config.get("timeout", 60.0))) as client:
+                resp = await client.get(
+                    f"{server_url}/api/kernels/{kernel_id}",
+                    params={"include_profiler_data": include_profiler_data},
+                    headers=headers,
+                )
+                if resp.status_code == 404:
+                    result = {"success": True, "kernel": None, "error": None}
+                else:
+                    resp.raise_for_status()
+                    result = {"success": True, "kernel": resp.json(), "error": None}
+        else:
+            import kernelfoundry.eval_pipeline.database.queries as db_queries
+
+            _ensure_db()
+            kernel = db_queries.get_kernel(kernel_id)
+            result = {
+                "success": True,
+                "kernel": db_queries.kernel_to_full_dict(kernel, include_profiler_data) if kernel is not None else None,
+                "error": None,
+            }
+
+        if ctx is not None:
+            await ctx.report_progress(progress=100, total=100)
+        return result
+
+    except Exception as e:
+        logging.exception("get_kernel_from_db failed")
+        if ctx is not None:
+            await ctx.report_progress(progress=100, total=100)
+        return {"success": False, "kernel": None, "error": _format_server_request_error(e, server_url)}
 
 
 @mcp.tool()
@@ -519,6 +796,9 @@ async def submit_task(folder_path: str, ctx: Context) -> dict[str, Any]:
             - runtime_stats (dict): Runtime statistics from the best kernel execution.
             - speedup (float | str): Runtime improvement of the best kernel or "N/A".
             - best_kernel_id (int | None): Database ID of the best kernel.
+            - graph_url (str | None): Link to the KernelFoundry graph UI showing this
+              task's full iteration history. Always share this link with the user after
+              reporting results.
 
         Side effect:
             The best kernel's code is written back into the task folder, replacing
@@ -550,7 +830,7 @@ async def submit_task(folder_path: str, ctx: Context) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def build_and_test(folder_path: str, ctx: Context) -> dict[str, Any]:
+async def build_and_test(folder_path: str, ctx: Context) -> BuildAndTestResult:
     """Builds and tests a task defined in a directory.
 
     If a server URL is configured, this submits the task archive to the KernelFoundry
@@ -559,11 +839,16 @@ async def build_and_test(folder_path: str, ctx: Context) -> dict[str, Any]:
     Note: this tool only builds and tests the current kernel, it does not run the full multi-iteration optimization loop.
     Optimization-related parameters in config.yaml are ignored.
 
+    Returns a structured result containing success status, job ID, evaluation log,
+    runtime statistics, speedup, best-kernel ID (optional), potential errors,
+    and a URL to the KernelFoundry UI showing the graph of how the kernel evolved.
+    If the URL is present and not None, share the link with the user after reporting results.
+
     Args:
         folder_path (str): Absolute or relative path to the folder containing the custom task.
 
     Returns:
-        dict: A dictionary with the following keys:
+        BuildAndTestResult: The build and test result with the following fields:
 
             - success (bool): Whether the job completed successfully.
             - job_id (int): The ID of the submitted job.
@@ -571,6 +856,8 @@ async def build_and_test(folder_path: str, ctx: Context) -> dict[str, Any]:
             - runtime_stats (dict): Runtime statistics from kernel execution.
             - speedup (float | str): Runtime improvement metric or "N/A" if not available.
             - error (str, optional): Error message if the job failed.
+            - graph_url (str | None): Link to the KernelFoundry graph UI showing this
+              task's full iteration history.
     """
     folder = Path(folder_path).expanduser().resolve()
     if not folder.exists():
@@ -597,7 +884,7 @@ async def build_and_test(folder_path: str, ctx: Context) -> dict[str, Any]:
     )
     del result["chosen_kernel_id"]
     result.pop("_output_code", None)
-    return result
+    return BuildAndTestResult.model_validate(result)
 
 
 def main(_internal_comm_path_arg: str | None = None) -> None:

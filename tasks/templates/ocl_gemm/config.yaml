@@ -1,0 +1,8 @@
+task_name: gemm_ocl # name for the kernel generation task
+job_name: gemm_ocl_lnl # a name for the specific job you want to run, e.g. optimizing for Lunar Lake
+
+gpu_arch: lnl # Short name of the target architecture
+language: OCL # The target language
+
+prompt:
+  reference_language: OCL

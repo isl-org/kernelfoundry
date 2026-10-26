@@ -457,6 +457,15 @@ ARCH_TO_PCI_DEVICE_IDS = {
     "rpl": ["0xa7a0"],
 }
 
+# maps a gpu_arch string to the device name ocloc expects, for the SKU names it rejects with
+# "Could not determine device target". Those three are all Battlemage, and bmg is the generic
+# platform name ocloc knows. Archs missing here are passed through unchanged.
+ARCH_TO_OCLOC_DEVICE = {
+    "b580": "bmg",
+    "b70": "bmg",
+    "b60": "bmg",
+}
+
 # Same as above but keyed by Device ID which is easier to get programmatically
 GPU_SPEC_INFO_BY_DEVICE_ID = {v["Device ID"].lower(): v for k, v in GPU_SPEC_INFO.items() if "Device ID" in v}
 

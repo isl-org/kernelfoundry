@@ -18,272 +18,274 @@ from kernelfoundry.gui.utils import (
 
 PAGE_SIZE = 10
 
-table_data = {
-    "rows": [],
-    "pagination": {
-        "rowsPerPage": 10,
-        "descending": True,
-        "sortBy": "created_at",
-        "page": 1,
-        "rowsNumber": 0,
-    },
-}
-
 ALL_STATUS_OPTIONS = ["INIT", "RUN", "COMPLETE", "FAIL", "VALIDATING", "VALIDATED", "CANCELED"]
-
-current_statuses = None
-current_user_id = None
-jobs_container = None
-
-
-def get_full_count():
-    """Get the total count of jobs for pagination."""
-    if current_user_id:
-        full_count = get_total_jobs_by_user(current_user_id, statuses=current_statuses)
-    else:
-        full_count = get_total_jobs(statuses=current_statuses)
-    table_data["pagination"]["rowsNumber"] = full_count
-    jobs_table.refresh()
-
-
-def get_rows(pagination):
-    """Get paginated job rows."""
-    page = pagination["page"]
-    rpp = pagination["rowsPerPage"]
-    sort_by = pagination.get("sortBy", "created_at")
-    descending = pagination.get("descending", True)
-
-    if current_user_id:
-        jobs = get_jobs_by_user(
-            current_user_id,
-            statuses=current_statuses,
-            offset=(page - 1) * rpp,
-            limit=rpp,
-            sort_by=sort_by,
-            descending=descending,
-        )
-    else:
-        jobs = get_jobs(
-            statuses=current_statuses,
-            offset=(page - 1) * rpp,
-            limit=rpp,
-            sort_by=sort_by,
-            descending=descending,
-        )
-
-    rows = []
-    for job in jobs:
-        # Check if buttons should be enabled
-        job_status = job.status or "Unknown"
-
-        # Generate result link
-        job_name = job.config.get("job_name") if job.config else None
-        task_name = job.config.get("task_name") if job.config else None
-        if job.config and (job_name is None or task_name is None):
-            # fall back to old naming scheme:
-            job_name = job.config.get("run_name") or job_name
-            task_name = job.config.get("Op_Name") or task_name
-        job_name, task_name = job_name or "N/A", task_name or "N/A"
-
-        rows.append(
-            {
-                "id": job.id,
-                "task_name": task_name,
-                "job_name": job_name,
-                "progress": f"{int(job.progress * 100)}%" if job.progress is not None else "N/A",
-                "status": job_status,
-                "created_at": job.created_at.strftime("%Y-%m-%d %H:%M") if job.created_at else "N/A",
-                "started_at": job.started_at.strftime("%Y-%m-%d %H:%M") if job.started_at else "N/A",
-                "finished_at": job.finished_at.strftime("%Y-%m-%d %H:%M") if job.finished_at else "N/A",
-                "logs": (f"{job.id}"),
-                "results": (f"{job.id}"),
-                "archive": (f"{job.id}"),
-            }
-        )
-    return rows
-
-
-def on_request(e: GenericEventArguments) -> None:
-    """Handle pagination requests."""
-    new_pagination = e.args["pagination"]
-    pagination = table_data["pagination"]
-    pagination.update(new_pagination)
-    new_rows = get_rows(pagination)
-    table_data["rows"] = new_rows
-    jobs_table.refresh()
-
-
-@ui.refreshable
-def jobs_table():
-    """Refreshable jobs table with pagination."""
-    columns = [
-        {"name": "id", "label": "Job ID", "field": "id", "required": True, "align": "left", "sortable": True},
-        {"name": "task_name", "label": "Task", "field": "task_name", "align": "left"},
-        {"name": "job_name", "label": "Job Name", "field": "job_name", "align": "left"},
-        {"name": "progress", "label": "Progress", "field": "progress", "align": "center"},
-        {"name": "status", "label": "Status", "field": "status", "align": "center"},
-        {"name": "created_at", "label": "Created", "field": "created_at", "align": "left", "sortable": True},
-        {"name": "started_at", "label": "Started At", "field": "started_at", "align": "left", "sortable": True},
-        {"name": "finished_at", "label": "Finished At", "field": "finished_at", "align": "center", "sortable": True},
-        {"name": "logs", "label": "Logs", "field": "logs", "align": "center"},
-        {"name": "results", "label": "Results", "field": "results", "align": "center"},
-        {"name": "archive", "label": "Archive", "field": "archive", "align": "center"},
-    ]
-
-    table = ui.table(
-        columns=columns, rows=table_data["rows"], row_key="id", pagination=table_data["pagination"]
-    ).classes("w-full")
-    table.on("request", on_request)
-
-    # Add buttons to the table
-    table.add_slot(
-        "body-cell-logs",
-        """
-        <q-td :props="props">
-            <q-btn 
-                color="primary" 
-                size="sm" 
-                label="Logs"
-                @click="$parent.$emit('logs-click', props.row.id)"
-            />
-        </q-td>
-    """,
-    )
-
-    table.add_slot(
-        "body-cell-results",
-        """
-        <q-td :props="props">
-            <q-btn 
-                color="secondary" 
-                size="sm" 
-                label="Results"
-                @click="$parent.$emit('results-click', props.row.id)"
-            />
-        </q-td>
-    """,
-    )
-
-    table.add_slot(
-        "body-cell-finished_at",
-        """
-        <q-td :props="props">
-            <q-btn 
-                v-if="props.row.status === 'RUN' || props.row.status === 'VALIDATING'"
-                color="warning" 
-                size="sm" 
-                icon="stop"
-                round
-                @click="$parent.$emit('cancel-click', props.row.id)"
-            >
-                <q-tooltip>Cancel Job</q-tooltip>
-            </q-btn>
-            <span v-else>{{ props.row.finished_at }}</span>
-        </q-td>
-    """,
-    )
-
-    table.add_slot(
-        "body-cell-archive",
-        """
-        <q-td :props="props">
-            <q-btn 
-                color="negative" 
-                size="sm" 
-                icon="delete"
-                round
-                @click="$parent.$emit('archive-click', props.row.id)"
-            >
-                <q-tooltip>Archive Job</q-tooltip>
-            </q-btn>
-        </q-td>
-    """,
-    )
-
-    # Handle button clicks
-    def handle_logs_click(job_id):
-        ui.navigate.to(f"/job_logs/{job_id}")
-
-    def handle_cancel_click(job_id):
-        """Cancel a job using the direct database function."""
-        try:
-            result = cancel_job_by_id(job_id)
-
-            if result is None:
-                ui.notify("Job not found", type="negative")
-            elif result is False:
-                ui.notify("Failed to cancel job", type="negative")
-            else:
-                ui.notify("Job canceled successfully", type="positive")
-                # Refresh the table
-                load_jobs()
-        except Exception as e:
-            ui.notify(f"Error canceling job: {str(e)}", type="negative")
-
-    def handle_archive_click(job_id):
-        """Archive a job using the direct database function."""
-        try:
-            result = archive_job_by_id(job_id)
-
-            if result is None:
-                ui.notify("Job not found", type="negative")
-            elif result is False:
-                ui.notify("Failed to archive job", type="negative")
-            else:
-                ui.notify("Job archived successfully", type="positive")
-                # Refresh the table
-                load_jobs()
-        except Exception as e:
-            ui.notify(f"Error archiving job: {str(e)}", type="negative")
-
-    table.on("logs-click", lambda e: handle_logs_click(e.args))
-    table.on(
-        "results-click",
-        lambda e: ui.navigate.to(f"/graph?job_id={e.args}"),
-    )
-    table.on("cancel-click", lambda e: handle_cancel_click(e.args))
-    table.on("archive-click", lambda e: handle_archive_click(e.args))
-
-
-def load_jobs():
-    """Load jobs with pagination."""
-    global current_statuses
-    if current_statuses is None:
-        current_statuses = ALL_STATUS_OPTIONS.copy()
-
-    try:
-        # Get total count and update pagination
-        get_full_count()
-
-        # Reset to first page and load initial data
-        table_data["pagination"]["page"] = 1
-        rows = get_rows(table_data["pagination"])
-        table_data["rows"] = rows
-
-        # Clear container and show table
-        jobs_container.clear()
-        with jobs_container:
-            if not rows and table_data["pagination"]["rowsNumber"] == 0:
-                ui.label("No jobs found with the selected status filter.").classes("text-gray-500")
-            else:
-                jobs_table()
-
-    except Exception as e:
-        jobs_container.clear()
-        with jobs_container:
-            ui.label(f"Error loading jobs: {str(e)}").classes("text-red-500")
 
 
 def job_logs_main_page(user_id: Optional[str] = None):
-    """Main page showing list of all jobs with logs."""
-    global jobs_container, current_user_id
+    """Main page showing list of all jobs with logs.
 
-    current_user_id = user_id
+    All state below is local to this call so that concurrent clients (browser tabs/users) never
+    share or clobber each other's filters, pagination, or table container.
+    """
+    table_data = {
+        "rows": [],
+        "pagination": {
+            "rowsPerPage": PAGE_SIZE,
+            "descending": True,
+            "sortBy": "created_at",
+            "page": 1,
+            "rowsNumber": 0,
+        },
+    }
+    current_statuses = ALL_STATUS_OPTIONS.copy()
+    jobs_container = None
 
-    saved_statuses = current_statuses if current_statuses is not None else ALL_STATUS_OPTIONS.copy()
+    def get_full_count():
+        """Get the total count of jobs for pagination."""
+        if user_id:
+            full_count = get_total_jobs_by_user(user_id, statuses=current_statuses)
+        else:
+            full_count = get_total_jobs(statuses=current_statuses)
+        table_data["pagination"]["rowsNumber"] = full_count
+        jobs_table.refresh()
+
+    def get_rows(pagination):
+        """Get paginated job rows."""
+        page = pagination["page"]
+        rpp = pagination["rowsPerPage"] or PAGE_SIZE  # Quasar sends 0 for "All"; never pass that through as LIMIT 0
+        sort_by = pagination.get("sortBy", "created_at")
+        descending = pagination.get("descending", True)
+
+        if user_id:
+            jobs = get_jobs_by_user(
+                user_id,
+                statuses=current_statuses,
+                offset=(page - 1) * rpp,
+                limit=rpp,
+                sort_by=sort_by,
+                descending=descending,
+            )
+        else:
+            jobs = get_jobs(
+                statuses=current_statuses,
+                offset=(page - 1) * rpp,
+                limit=rpp,
+                sort_by=sort_by,
+                descending=descending,
+            )
+
+        rows = []
+        for job in jobs:
+            # Check if buttons should be enabled
+            job_status = job.status or "Unknown"
+
+            # Generate result link
+            job_name = job.config.get("job_name") if job.config else None
+            task_name = job.config.get("task_name") if job.config else None
+            if job.config and (job_name is None or task_name is None):
+                # fall back to old naming scheme:
+                job_name = job.config.get("run_name") or job_name
+                task_name = job.config.get("Op_Name") or task_name
+            job_name, task_name = job_name or "N/A", task_name or "N/A"
+
+            rows.append(
+                {
+                    "id": job.id,
+                    "task_name": task_name,
+                    "job_name": job_name,
+                    "progress": f"{int(job.progress * 100)}%" if job.progress is not None else "N/A",
+                    "status": job_status,
+                    "created_at": job.created_at.strftime("%Y-%m-%d %H:%M") if job.created_at else "N/A",
+                    "started_at": job.started_at.strftime("%Y-%m-%d %H:%M") if job.started_at else "N/A",
+                    "finished_at": job.finished_at.strftime("%Y-%m-%d %H:%M") if job.finished_at else "N/A",
+                    "logs": (f"{job.id}"),
+                    "results": (f"{job.id}"),
+                    "archive": (f"{job.id}"),
+                }
+            )
+        return rows
+
+    def on_request(e: GenericEventArguments) -> None:
+        """Handle pagination requests."""
+        new_pagination = e.args["pagination"]
+        pagination = table_data["pagination"]
+        pagination.update(new_pagination)
+        new_rows = get_rows(pagination)
+        table_data["rows"] = new_rows
+        jobs_table.refresh()
+
+    @ui.refreshable
+    def jobs_table():
+        """Refreshable jobs table with pagination."""
+        columns = [
+            {"name": "id", "label": "Job ID", "field": "id", "required": True, "align": "left", "sortable": True},
+            {"name": "task_name", "label": "Task", "field": "task_name", "align": "left"},
+            {"name": "job_name", "label": "Job Name", "field": "job_name", "align": "left"},
+            {"name": "progress", "label": "Progress", "field": "progress", "align": "center"},
+            {"name": "status", "label": "Status", "field": "status", "align": "center"},
+            {"name": "created_at", "label": "Created", "field": "created_at", "align": "left", "sortable": True},
+            {
+                "name": "started_at",
+                "label": "Started At",
+                "field": "started_at",
+                "align": "left",
+                "sortable": True,
+            },
+            {
+                "name": "finished_at",
+                "label": "Finished At",
+                "field": "finished_at",
+                "align": "center",
+                "sortable": True,
+            },
+            {"name": "logs", "label": "Logs", "field": "logs", "align": "center"},
+            {"name": "results", "label": "Results", "field": "results", "align": "center"},
+            {"name": "archive", "label": "Archive", "field": "archive", "align": "center"},
+        ]
+
+        table = ui.table(
+            columns=columns, rows=table_data["rows"], row_key="id", pagination=table_data["pagination"]
+        ).classes("w-full")
+        # Quasar's default rows-per-page options include "All" (0), which would fetch the full jobs
+        # table at once; drop it and cap the max page size instead.
+        table.props("rows-per-page-options=[10,25,50,100]")
+        table.on("request", on_request)
+
+        # Add buttons to the table
+        table.add_slot(
+            "body-cell-logs",
+            """
+            <q-td :props="props">
+                <q-btn
+                    color="primary"
+                    size="sm"
+                    label="Logs"
+                    @click="$parent.$emit('logs-click', props.row.id)"
+                />
+            </q-td>
+        """,
+        )
+
+        table.add_slot(
+            "body-cell-results",
+            """
+            <q-td :props="props">
+                <q-btn
+                    color="secondary"
+                    size="sm"
+                    label="Results"
+                    @click="$parent.$emit('results-click', props.row.id)"
+                />
+            </q-td>
+        """,
+        )
+
+        table.add_slot(
+            "body-cell-finished_at",
+            """
+            <q-td :props="props">
+                <q-btn
+                    v-if="props.row.status === 'RUN' || props.row.status === 'VALIDATING'"
+                    color="warning"
+                    size="sm"
+                    icon="stop"
+                    round
+                    @click="$parent.$emit('cancel-click', props.row.id)"
+                >
+                    <q-tooltip>Cancel Job</q-tooltip>
+                </q-btn>
+                <span v-else>{{ props.row.finished_at }}</span>
+            </q-td>
+        """,
+        )
+
+        table.add_slot(
+            "body-cell-archive",
+            """
+            <q-td :props="props">
+                <q-btn
+                    color="negative"
+                    size="sm"
+                    icon="delete"
+                    round
+                    @click="$parent.$emit('archive-click', props.row.id)"
+                >
+                    <q-tooltip>Archive Job</q-tooltip>
+                </q-btn>
+            </q-td>
+        """,
+        )
+
+        # Handle button clicks
+        def handle_logs_click(job_id):
+            ui.navigate.to(f"/job_logs/{job_id}")
+
+        def handle_cancel_click(job_id):
+            """Cancel a job using the direct database function."""
+            try:
+                result = cancel_job_by_id(job_id)
+
+                if result is None:
+                    ui.notify("Job not found", type="negative")
+                elif result is False:
+                    ui.notify("Failed to cancel job", type="negative")
+                else:
+                    ui.notify("Job canceled successfully", type="positive")
+                    # Refresh the table
+                    load_jobs()
+            except Exception as e:
+                ui.notify(f"Error canceling job: {str(e)}", type="negative")
+
+        def handle_archive_click(job_id):
+            """Archive a job using the direct database function."""
+            try:
+                result = archive_job_by_id(job_id)
+
+                if result is None:
+                    ui.notify("Job not found", type="negative")
+                elif result is False:
+                    ui.notify("Failed to archive job", type="negative")
+                else:
+                    ui.notify("Job archived successfully", type="positive")
+                    # Refresh the table
+                    load_jobs()
+            except Exception as e:
+                ui.notify(f"Error archiving job: {str(e)}", type="negative")
+
+        table.on("logs-click", lambda e: handle_logs_click(e.args))
+        table.on(
+            "results-click",
+            lambda e: ui.navigate.to(f"/graph?job_id={e.args}"),
+        )
+        table.on("cancel-click", lambda e: handle_cancel_click(e.args))
+        table.on("archive-click", lambda e: handle_archive_click(e.args))
+
+    def load_jobs():
+        """Load jobs with pagination."""
+        try:
+            # Get total count and update pagination
+            get_full_count()
+
+            # Reset to first page and load initial data
+            table_data["pagination"]["page"] = 1
+            rows = get_rows(table_data["pagination"])
+            table_data["rows"] = rows
+
+            # Clear container and show table
+            jobs_container.clear()
+            with jobs_container:
+                if not rows and table_data["pagination"]["rowsNumber"] == 0:
+                    ui.label("No jobs found with the selected status filter.").classes("text-gray-500")
+                else:
+                    jobs_table()
+
+        except Exception as e:
+            jobs_container.clear()
+            with jobs_container:
+                ui.label(f"Error loading jobs: {str(e)}").classes("text-red-500")
 
     def on_status_change():
-        global current_statuses
+        nonlocal current_statuses
         value = status_filter.value or []
         current_statuses = value if isinstance(value, list) else [value]
         load_jobs()
@@ -303,7 +305,7 @@ def job_logs_main_page(user_id: Optional[str] = None):
                         ui.label("Filter by status").classes("text-sm font-semibold mb-2")
                         status_filter = ui.select(
                             options=ALL_STATUS_OPTIONS,
-                            value=saved_statuses,
+                            value=current_statuses,
                             multiple=True,
                             clearable=False,
                         ).classes("w-full")
@@ -311,7 +313,6 @@ def job_logs_main_page(user_id: Optional[str] = None):
 
     jobs_container = ui.column().classes("w-full")
 
-    # Load jobs on page open using the persisted filter
     load_jobs()
 
 

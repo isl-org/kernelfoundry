@@ -61,7 +61,7 @@
 #
 # Inspect the results in the UI on http://localhost:8885:
 #   docker run --rm -it -p 8885:8885 -v "$PWD/runs:/opt/kernelfoundry/runs" \
-#     kernelfoundry:local python start_gui.py
+#     kernelfoundry:local python -m kernelfoundry.gui
 #
 # unitrace and VTune read GPU performance counters, which the host kernel only hands out
 # to non-root callers after:

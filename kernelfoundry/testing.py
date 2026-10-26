@@ -115,6 +115,13 @@ def assert_allclose(
     else:
         arrays_name_str = "Arrays"
 
+    # Evaluate the metric at no less than float32, without ever narrowing the inputs. In float16
+    # the subtraction can overflow to inf (float16 saturates at 65504) and a small epsilon is lost
+    # when added to a float16 value.
+    metric_dtype = np.result_type(actual.dtype, expected.dtype, np.float32)
+    actual = actual.astype(metric_dtype, copy=False)
+    expected = expected.astype(metric_dtype, copy=False)
+
     abs_rel_error = np.abs((actual - expected) / (np.abs(expected) + epsilon))
     num_correct = np.sum(abs_rel_error < rtol)
     total_elements = abs_rel_error.size

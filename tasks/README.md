@@ -5,6 +5,7 @@ Example tasks and an interface to commonly used benchmarks.
 | Directory | Contents |
 | --- | --- |
 | `example_custom/` | A complete SYCL matrix-multiply task. The best starting point for your own. |
+| `templates/` | One example task per other supported language (OCL, CM, Vulkan) — see `templates/README.md`. |
 | `kernelbench/` | Template for converting a KernelBench task into KernelFoundry format. |
 | `pytorch_functionals.csv` | Reference PyTorch operations used by the KernelBench tasks. |
 
