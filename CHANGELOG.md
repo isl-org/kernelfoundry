@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.5.0 (2026-10-26)
+
+### Features
+
+- Add CM/Vulkan support, roofline targets, kernel search, and simplified config
+  ([#14](https://github.com/isl-org/kernelfoundry/pull/14),
+  [`63d97d3`](https://github.com/isl-org/kernelfoundry/commit/63d97d394d1f3df2aacd16fe87a48110e0883e1f))
+
+
 ## v0.4.0 (2026-09-04)
 
 ### Features
